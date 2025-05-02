@@ -17,11 +17,9 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Deploy to server
-        run: |
-          ssh -o StrictHostKeyChecking=no root@79.174.81.57 << 'EOF'
-            cd /root/bot  # Путь на сервере к репозиторию
-            git pull origin new-branch  # Пулл изменений из ветки 'new-branch'
-            # Если нужно перезапустить приложение, добавьте команду перезапуска службы
-            sudo systemctl restart your_service_name  # Замените на имя вашего сервиса
-          EOF
+      - - name: Add SSH key
+            run: |
+              mkdir -p ~/.ssh
+              echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+              chmod 600 ~/.ssh/id_rsa
+              ssh-keyscan github.com >> ~/.ssh/known_hosts
