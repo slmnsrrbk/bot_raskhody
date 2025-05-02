@@ -164,7 +164,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(
-        "Ау! Я помогу вам вести учёт расходов.\n\n"
+        "А! Я помогу вам вести учёт расходов.\n\n"
         "Просто напишите, например: `вчера хлеб 200` или `такси 350`\n\n"
         f"{limit_text}\n\n",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
