@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - new-branch  # или используйте 'main' или другой основной branch
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
