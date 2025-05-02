@@ -3,22 +3,29 @@ name: Deploy to Server
 on:
   push:
     branches:
-      - new-branch  # или используйте 'main' или другой основной branch
+      - new-branch  # Укажите вашу основную ветку
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+    # Шаг 1: Клонировать код из репозитория
+    - name: Checkout code
+      uses: actions/checkout@v2
 
-      - name: Set up SSH
-        uses: webfactory/ssh-agent@v0.5.3
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+    # Шаг 2: Настройка SSH-ключа
+    - name: Set up SSH
+      uses: webfactory/ssh-agent@v0.5.3
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}  # Убедитесь, что ваш SSH ключ сохранен в секрете GitHub
 
-      - - name: Add SSH key
-            run: |
-              mkdir -p ~/.ssh
-              echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-              chmod 600 ~/.ssh/id_rsa
-              ssh-keyscan github.com >> ~/.ssh/known_hosts
+    # Шаг 3: Развертывание на сервере
+    - name: Deploy to server
+      run: |
+        ssh -o StrictHostKeyChecking=no root@your_server_ip << EOF
+          cd /path/to/your/repository
+          git pull origin new-branch  # Или ваш основной branch
+          # Здесь добавьте команды для перезапуска приложения, если необходимо
+          sudo systemctl restart your_service_name
+        EOF
