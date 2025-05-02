@@ -3,26 +3,25 @@ name: Deploy to Server
 on:
   push:
     branches:
-      - main  # или ваш основной branch
+      - new-branch  # или используйте 'main' или другой основной branch
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
-      
+
       - name: Set up SSH
         uses: webfactory/ssh-agent@v0.5.3
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-      
+
       - name: Deploy to server
         run: |
-          ssh -o StrictHostKeyChecking=no root@your_server_ip << 'EOF'
-            cd /path/to/your/repository
-            git pull origin main  # или ваш основной branch
-            # Добавьте команды для перезапуска вашего приложения, если необходимо.
-            sudo systemctl restart your_service_name
+          ssh -o StrictHostKeyChecking=no root@79.174.81.57 << 'EOF'
+            cd /root/bot  # Путь на сервере к репозиторию
+            git pull origin new-branch  # Пулл изменений из ветки 'new-branch'
+            # Если нужно перезапустить приложение, добавьте команду перезапуска службы
+            sudo systemctl restart your_service_name  # Замените на имя вашего сервиса
           EOF
