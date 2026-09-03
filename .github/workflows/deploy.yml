@@ -8,7 +8,7 @@ on:
         required: true
         default: install
         type: choice
-        options: [install, restart, logs]
+        options: [install, restart, logs, diagnose]
 
 jobs:
   deploy:
@@ -30,6 +30,22 @@ jobs:
         run: |
           sshpass -e ssh $SSH_OPTS "root@$HOST" \
             'echo "connected: $(hostname)"; head -2 /etc/os-release; python3 --version 2>&1; uname -m; free -m | head -2; df -h / | tail -1'
+
+      - name: Diagnose server
+        if: env.ACTION == 'diagnose'
+        run: |
+          sshpass -e ssh $SSH_OPTS "root@$HOST" 'bash -s' <<'REMOTE'
+          echo "== listening ports =="; ss -tlnp | awk 'NR==1 || /LISTEN/' | sed -E 's/users:\(\("([^"]+)".*/\1/'
+          echo "== running services =="; systemctl list-units --type=service --state=running --no-pager --no-legend | awk '{print $1}'
+          echo "== docker =="; command -v docker >/dev/null && docker ps --format '{{.Names}}  {{.Image}}  {{.Ports}}' || echo "no docker"
+          echo "== nginx/caddy/apache =="; for b in nginx caddy apache2 httpd; do command -v $b >/dev/null && echo "$b: installed"; done; true
+          echo "== nginx sites =="; ls /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null; true
+          echo "== certs =="; ls /etc/letsencrypt/live 2>/dev/null || echo "no letsencrypt"; true
+          echo "== hostname =="; hostname -f 2>/dev/null; true
+          echo "== bot =="; systemctl is-active bot_raskhody; ls -la /root/bot | grep -E 'json|\.env'; true
+          echo "== firewall =="; command -v ufw >/dev/null && ufw status | head -15 || echo "no ufw"; true
+          echo "== mem/disk =="; free -m | head -2; df -h / | tail -1
+          REMOTE
 
       - name: Install / update bot
         if: env.ACTION == 'install'
