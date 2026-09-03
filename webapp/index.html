@@ -42,12 +42,16 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .hbtns{display:flex;gap:10px;align-items:center}
 .addbtn.scan{background:var(--card);color:var(--blue);box-shadow:var(--shadow),0 0 0 .5px var(--sep)}
 .addbtn.scan svg{width:20px;height:20px}
-.rc-item{display:flex;align-items:center;gap:10px;padding:10px 12px;position:relative}
-.rc-item + .rc-item::before{content:"";position:absolute;left:12px;right:0;top:0;height:.5px;background:var(--sep)}
-.rc-item .name{flex:1;font-size:15px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rc-item .cat{font-size:12px;color:var(--label2)}
-.rc-item .amt{font-size:15px;font-weight:500}
-.rc-item .x{width:26px;height:26px;border-radius:50%;background:var(--fill);color:var(--label2);display:flex;align-items:center;justify-content:center;font-size:14px;flex:none}
+.rc-item{display:flex;align-items:center;gap:12px;padding:10px 12px 10px 14px;position:relative;width:100%;text-align:left;min-height:58px}
+.rc-item + .rc-item::before{content:"";position:absolute;left:56px;right:0;top:0;height:.5px;background:var(--sep)}
+.rc-item:active{background:var(--fill)}
+.rc-item .main{flex:1;min-width:0}
+.rc-item .name{font-size:16px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rc-item .rc-cat{font-size:13px;color:var(--label2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rc-item .amt{font-size:16px;font-weight:500;white-space:nowrap}
+.rc-item .x{width:28px;height:28px;border-radius:50%;background:var(--fill);color:var(--label2);display:flex;align-items:center;justify-content:center;font-size:14px;flex:none;margin-left:2px}
+.rc-date{font-size:13px;font-weight:600;color:var(--label2);padding:12px 4px 6px;text-transform:uppercase;letter-spacing:.02em}
+.rc-date:first-child{padding-top:2px}
 .bigbtn{width:100%;height:50px;border-radius:12px;background:var(--blue);color:#fff;font-size:17px;font-weight:600;margin-top:6px}
 .bigbtn:disabled{opacity:.5}
 .opt{display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:48px;position:relative;width:100%;text-align:left;font-size:17px}
@@ -785,23 +789,62 @@ async function uploadReceipt(f){
 }
 [fileInput, fileGal].forEach(inp => inp.addEventListener("change", () => { const f = inp.files && inp.files[0]; if (f) uploadReceipt(f); }));
 function showReceipt(rc){
-  let items = rc.items.slice();
+  const today = state.data.today, base = rc.date || today;
+  /* у каждой позиции своя дата: из списка на фото, иначе дата чека */
+  let items = rc.items.map(x => Object.assign({}, x, { date: x.date || base }));
   const render = () => {
     const total = items.reduce((s,x)=>s+x.amount,0);
+    const dates = [...new Set(items.map(x => x.date))].sort().reverse();
+    const multi = dates.length > 1;
+    const title = rc.kind === "list" || multi ? "Список трат" : (rc.store || "Чек");
+    const when = multi ? `${dates.length} ${plural(dates.length,"дата","даты","дат")}` : dateLabel(dates[0] || base, today);
+    const itemHtml = (it, i) => { const m = catOf(it.category); return `<button type="button" class="rc-item" data-i="${i}">
+        <div class="ico" style="background:${m.c};width:34px;height:34px;font-size:17px;border-radius:9px;flex:none">${m.e}</div>
+        <div class="main"><div class="name">${esc(it.name)}</div><div class="rc-cat">${esc(it.category)}</div></div>
+        <div class="amt num">${fmt(it.amount)}</div><span class="x" data-x="${i}" role="button" aria-label="Убрать">✕</span></button>`; };
+    let list = "";
+    if (multi) dates.forEach(d => { list += `<div class="rc-date">${dateLabel(d, today)}</div><div class="card">${items.map((it,i) => it.date === d ? itemHtml(it,i) : "").join("")}</div>`; });
+    else list = `<div class="card">${items.map(itemHtml).join("")}</div>`;
     sheet.innerHTML = `<div class="grab"></div>
-      <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>${esc(rc.store || "Чек")}</h2><span></span></div>
-      <div class="hint">${dateLabel(rc.date, state.data.today)} · ${items.length} ${plural(items.length,"позиция","позиции","позиций")} · <b class="num">${fmt(total)}</b>${rc.total && rc.total !== total ? ` · в чеке ${fmt(rc.total)}` : ""}${rc.source==="qr"?" · по QR":rc.source==="qr-sum"?" · только сумма из QR":""}</div>
-      <div class="fields" id="rcList">${items.map((it,i) => { const m = catOf(it.category); return `<div class="rc-item"><div class="ico" style="background:${m.c};width:30px;height:30px;font-size:15px;border-radius:8px">${m.e}</div><div class="name">${esc(it.name)}<div class="cat">${esc(it.category)}</div></div><div class="amt num">${fmt(it.amount)}</div><button type="button" class="x" data-i="${i}">✕</button></div>`; }).join("")}</div>
-      <button type="button" class="bigbtn" id="rcAdd" ${items.length?"":"disabled"}>Добавить ${items.length ? items.length + " " + plural(items.length,"позицию","позиции","позиций") : ""}</button>`;
+      <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>${esc(title)}</h2><span></span></div>
+      <div class="hint">${when} · ${items.length} ${plural(items.length,"позиция","позиции","позиций")} · <b class="num">${fmt(total)}</b>${rc.total && rc.total !== total ? ` · в чеке ${fmt(rc.total)}` : ""}${rc.source==="qr"?" · по QR":rc.source==="qr-sum"?" · только сумма из QR":""}<br>Нажмите на позицию, чтобы поправить название, сумму, дату или категорию</div>
+      <div id="rcList">${items.length ? list : `<div class="card"><div class="empty">Позиций не осталось</div></div>`}</div>
+      <button type="button" class="bigbtn" id="rcAdd" style="margin-top:14px" ${items.length?"":"disabled"}>Добавить ${items.length ? items.length + " " + plural(items.length,"позицию","позиции","позиций") : ""}</button>`;
     document.getElementById("cancel").onclick = closeSheet;
-    document.getElementById("rcList").addEventListener("click", e => { const b = e.target.closest(".x"); if (!b) return; haptic("light"); items.splice(Number(b.dataset.i),1); render(); });
+    document.getElementById("rcList").addEventListener("click", e => {
+      const x = e.target.closest("[data-x]");
+      if (x) { haptic("light"); items.splice(Number(x.dataset.x),1); render(); return; }
+      const b = e.target.closest(".rc-item"); if (b) { haptic("light"); editItem(Number(b.dataset.i)); }
+    });
     document.getElementById("rcAdd").onclick = async () => {
       if (state.busy) return;
       try { state.busy = true; document.getElementById("rcAdd").disabled = true;
-        const res = await api("/api/expenses/bulk", {method:"POST", body: JSON.stringify({items: items.map(x => Object.assign({}, x, {date: rc.date}))})});
+        const res = await api("/api/expenses/bulk", {method:"POST", body: JSON.stringify({items})});
         haptic("ok"); closeSheet(); toast(`Добавлено ${res.added.length} на ${fmt(res.total)}`); await load(false);
       } catch(e){ haptic("err"); toast(e.message); document.getElementById("rcAdd").disabled = false; } finally { state.busy = false; }
     };
+  };
+  const editItem = i => {
+    const it = items[i];
+    sheet.innerHTML = `<div class="grab"></div>
+      <div class="sheet-h"><button type="button" id="back">Назад</button><h2>Позиция</h2><button type="button" class="primary" id="ok">Готово</button></div>
+      <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${it.amount}" autocomplete="off"><div class="cur">рублей</div></div>
+      <div class="name-field"><input id="name" enterkeyhint="done" placeholder="Название" value="${esc(it.name)}" autocomplete="off" autocapitalize="sentences"></div>
+      <div class="fields"><div class="field"><label>Дата</label><input id="date" type="date" value="${it.date}" max="${today}"></div></div>
+      <div class="hint">Категория</div>${catPicker(it.category)}
+      <button type="button" class="danger" id="rm">Убрать из списка</button>`;
+    const getCat = bindCats();
+    const done = () => {
+      const name = val("name").trim(), amount = Math.round(parseFloat(String(val("amount")).replace(",", ".")));
+      if (!name) return toast("Введите название"), haptic("err");
+      if (!(amount > 0)) return toast("Введите сумму"), haptic("err");
+      items[i] = { name, amount, category: getCat() || it.category, date: val("date") || it.date };
+      haptic("ok"); render();
+    };
+    wireEnter(done);
+    document.getElementById("back").onclick = render;
+    document.getElementById("ok").onclick = done;
+    document.getElementById("rm").onclick = () => { haptic("medium"); items.splice(i,1); render(); };
   };
   render();
 }

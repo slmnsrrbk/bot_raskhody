@@ -67,3 +67,31 @@ class ReceiptQrTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListPhotoTests(unittest.TestCase):
+    def test_clean_receipt_keeps_item_dates(self):
+        parsed = {"kind": "list", "items": [
+            {"name": "Бургер", "amount": "2800", "category": "Еда", "date": "2026-09-03"},
+            {"name": "Мойка", "amount": 700, "category": "Машина", "date": "03.09.2026"},
+            {"name": "Продукты", "amount": 1500, "category": "Продукты", "date": "не дата"},
+            {"name": "Стрижка", "amount": 1300, "category": "Другое"},
+        ]}
+        out = ai._clean_receipt(parsed)
+        self.assertEqual(out["kind"], "list")
+        self.assertEqual([i["date"] for i in out["items"]], ["2026-09-03", "2026-09-03", None, None])
+
+    def test_prompt_mentions_today_and_lists(self):
+        import datetime
+        from unittest import mock
+        seen = {}
+
+        def fake(messages, *a, **kw):
+            seen["text"] = messages[0]["content"][0]["text"]
+            return '{"kind":"list","items":[{"name":"Кофе","amount":200,"category":"Еда","date":"2026-09-02"}]}'
+
+        with mock.patch.object(ai, "POLZA_API_KEY", "k"), mock.patch.object(ai, "_polza_chat", side_effect=fake):
+            out = ai.parse_receipt(b"img", "image/jpeg", today=datetime.date(2026, 9, 3))
+        self.assertIn("2026-09-03", seen["text"])
+        self.assertIn("список трат", seen["text"])
+        self.assertEqual(out["items"][0]["date"], "2026-09-02")

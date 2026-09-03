@@ -524,18 +524,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
 async def _finish_receipt(update, context, user_id: int, parsed: dict, wait):
     date = parsed["date"] or today().isoformat()
     for it in parsed["items"]:
-        it["date"] = date
+        it["date"] = it.get("date") or date            # у позиций из списка свои даты
     added = storage.add_expenses_bulk(user_id, parsed["items"])
     token = secrets.token_hex(4)
     context.user_data.setdefault("receipts", {})[token] = [a["id"] for a in added]
     total = sum(a["amount"] for a in added)
     src = {"qr": " · по QR", "ai": "", "qr-sum": " · только сумма из QR"}.get(parsed.get("source"), "")
-    head = f"🧾 {parsed['store'] or 'Чек'} · {storage.to_display(date)}{src}"
-    lines = [f"• {a['name']} — {fmt(a['amount'])} ({a['category']})" for a in added[:20]]
-    if len(added) > 20:
-        lines.append(f"… и ещё {len(added) - 20}")
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Отменить весь чек", callback_data=f"rc:{token}")]])
-    await wait.edit_text(f"{head}\nДобавлено {len(added)} {plural(len(added), 'позиция', 'позиции', 'позиций')} на {fmt(total)}:\n\n" + "\n".join(lines), reply_markup=kb)
+    dates = {a["iso"] for a in added}
+    is_list = parsed.get("kind") == "list" or len(dates) > 1
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Отменить всё" if is_list else "↩️ Отменить весь чек", callback_data=f"rc:{token}")],
+                               [InlineKeyboardButton("✏️ Категории", callback_data=f"cats:{token}")]])
+    if is_list:
+        head = f"📝 Список трат с фото{src}\nДобавлено {len(added)} {plural(len(added), 'позиция', 'позиции', 'позиций')} на {fmt(total)}:"
+        await wait.edit_text(_items_text(added, head), reply_markup=kb)
+    else:
+        head = f"🧾 {parsed['store'] or 'Чек'} · {storage.to_display(date)}{src}"
+        lines = [f"• {a['name']} — {fmt(a['amount'])} ({a['category']})" for a in added[:20]]
+        if len(added) > 20:
+            lines.append(f"… и ещё {len(added) - 20}")
+        await wait.edit_text(f"{head}\nДобавлено {len(added)} {plural(len(added), 'позиция', 'позиции', 'позиций')} на {fmt(total)}:\n\n" + "\n".join(lines), reply_markup=kb)
     status = limit_status(user_id)
     if status:
         await update.message.reply_text("📊 " + status)

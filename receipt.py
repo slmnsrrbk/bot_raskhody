@@ -115,7 +115,8 @@ def clean_item_name(name: str) -> str:
 def resolve(image_bytes: bytes = None, qr_text: str = None, mime: str = "image/jpeg"):
     """Полный разбор чека: QR → сервис проверки чеков → AI по фото → только сумма из QR.
 
-    -> {"store","date","total","items":[{name,amount,category}], "source": "qr"|"ai"|"qr-sum"} или None
+    -> {"store","date","total","items":[{name,amount,category,date|None}], "source": "qr"|"ai"|"qr-sum"} или None
+    date позиции заполнена, если на фото список трат с датами; иначе None — берётся общая дата.
     """
     qrraw = qr_text or (decode_qr(image_bytes) if image_bytes else None)
     qr = parse_qr(qrraw) if qrraw else None

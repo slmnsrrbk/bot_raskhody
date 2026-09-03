@@ -287,12 +287,17 @@ def generate_advice(report: str) -> str:
 # Чек по фотографии
 # ---------------------------------------------------------------------------
 RECEIPT_PROMPT = (
-    "На фото кассовый чек. Извлеки покупки и верни ТОЛЬКО JSON без пояснений вида:\n"
-    '{"store": "название магазина или null", "date": "ГГГГ-ММ-ДД или null", "total": число или null, '
-    '"items": [{"name": "короткое понятное название товара по-русски", "amount": сумма за позицию в рублях с учётом количества, '
-    '"category": одна из: ' + ", ".join(CATEGORIES) + "}]}\n"
-    "Названия сокращай до понятных (например «Молоко 2,5% 1л», а не код товара). Скидки учитывай в сумме позиции. "
-    "Если это не чек — верни {\"items\": []}."
+    "На фото либо кассовый чек, либо список трат (заметка, скриншот переписки, рукописный список). "
+    "Прочитай ВЕСЬ текст и извлеки все траты. Верни ТОЛЬКО JSON без пояснений вида:\n"
+    '{{"kind": "receipt" или "list", "store": "название магазина или null", "date": "ГГГГ-ММ-ДД или null", "total": число или null, '
+    '"items": [{{"name": "короткое понятное название по-русски", "amount": сумма позиции в рублях с учётом количества, '
+    '"category": одна из: {categories}, "date": "ГГГГ-ММ-ДД или null"}}]}}\n'
+    "Сегодня {today}, «вчера» — {yesterday}, «позавчера» — {before_yesterday}. "
+    "Если в тексте есть даты или слова «сегодня», «вчера», названия дней (например «2 сентября», «01.09.2026») — "
+    "заголовок с датой относится ко всем позициям ниже него, пока не встретится другая дата; проставь каждой позиции её date. "
+    "Для кассового чека date позиций = дата чека. Если дата нигде не указана — null. "
+    "Названия сокращай до понятных (например «Молоко 2,5% 1л», а не код товара); слова «потратил», «купил» в название не пиши. "
+    "Скидки учитывай в сумме позиции. Если трат нет — верни {{\"items\": []}}."
 )
 
 
@@ -312,18 +317,22 @@ def _extract_json(text: str):
     return None
 
 
-def parse_receipt(image_bytes: bytes, mime: str = "image/jpeg"):
-    """-> {"store", "date", "total", "items": [{"name", "amount", "category"}]} или None, если не распознано."""
+def parse_receipt(image_bytes: bytes, mime: str = "image/jpeg", today=None):
+    """-> {"kind", "store", "date", "total", "items": [{"name", "amount", "category", "date"|None}]} или None."""
     if not POLZA_API_KEY:
         return None
+    td = __import__("datetime").timedelta
+    today = today or __import__("datetime").date.today()
+    prompt = RECEIPT_PROMPT.format(categories=", ".join(CATEGORIES), today=today.isoformat(),
+                                   yesterday=(today - td(days=1)).isoformat(), before_yesterday=(today - td(days=2)).isoformat())
     data_url = f"data:{mime};base64," + base64.b64encode(image_bytes).decode()
     messages = [{"role": "user", "content": [
-        {"type": "text", "text": RECEIPT_PROMPT},
+        {"type": "text", "text": prompt},
         {"type": "image_url", "image_url": {"url": data_url}},
     ]}]
     for model in (POLZA_VISION_MODEL, POLZA_VISION_FALLBACK_MODEL):
         try:
-            answer = _polza_chat(messages, model, max_tokens=1500, temperature=0, timeout=60)
+            answer = _polza_chat(messages, model, max_tokens=2500, temperature=0, timeout=90)
         except Exception as e:  # noqa: BLE001
             logger.warning("Polza vision (%s): %s", model, e)
             continue
@@ -349,7 +358,11 @@ def _clean_receipt(parsed: dict) -> dict:
         cat = str(it.get("category") or "").strip().capitalize()
         if cat not in CATEGORIES:
             cat = by_keywords(name) or DEFAULT
-        items.append({"name": name[:100], "amount": amount, "category": cat})
+        try:
+            idate = storage.to_iso(it["date"]) if it.get("date") else None
+        except ValueError:
+            idate = None
+        items.append({"name": name[:100], "amount": amount, "category": cat, "date": idate})
     date = parsed.get("date")
     try:
         date = storage.to_iso(date) if date else None
@@ -360,4 +373,5 @@ def _clean_receipt(parsed: dict) -> dict:
     except (TypeError, ValueError):
         total = None
     store = str(parsed.get("store") or "").strip()[:60] or None
-    return {"store": store, "date": date, "total": total, "items": items}
+    kind = "list" if parsed.get("kind") == "list" else "receipt"
+    return {"kind": kind, "store": store, "date": date, "total": total, "items": items}
