@@ -112,7 +112,20 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .hero .delta{font-size:13px;font-weight:500;margin-top:8px;display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;background:var(--fill)}
 .hero .delta.down{color:var(--green)} .hero .delta.up{color:var(--red)}
 .hero .delta svg{width:11px;height:11px}
-.donut{width:104px;height:104px;flex:none;position:relative}
+.donut{width:104px;height:104px;flex:none;position:relative;transition:transform .15s}
+.donut:active{transform:scale(.95)}
+.bigchart{position:relative;width:220px;height:220px;margin:6px auto 14px}
+.bigchart svg{transform:rotate(-90deg);width:100%;height:100%}
+.bigchart circle{fill:none;stroke-width:26;cursor:pointer;transition:opacity .2s,stroke-width .2s}
+.bigchart circle.dim{opacity:.25}
+.bigchart circle.hot{stroke-width:30}
+.bigchart .c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 40px;pointer-events:none}
+.bigchart .c b{font-size:24px;font-weight:700;letter-spacing:-.02em}
+.bigchart .c span{font-size:13px;color:var(--label2);margin-top:2px}
+.legend .row{min-height:50px}
+.legend .dot{width:12px;height:12px;border-radius:50%;flex:none;margin:0 6px 0 2px}
+.legend .row.hot{background:var(--fill)}
+.legend .row + .row::before{left:58px}
 .donut svg{transform:rotate(-90deg);width:100%;height:100%}
 .donut circle{fill:none;stroke-width:12;stroke-linecap:butt;transition:stroke-dasharray .8s cubic-bezier(.2,.8,.2,1),stroke-dashoffset .8s cubic-bezier(.2,.8,.2,1)}
 .donut .c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;color:var(--label2);font-weight:600}
@@ -350,7 +363,7 @@ function render(){
   const segs = total ? cats.map(([c,a]) => { const len = a/total*C; const s = `<circle cx="52" cy="52" r="${r}" stroke="${catOf(c).hex}" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"/>`; off += len; return s; }).join("") : `<circle cx="52" cy="52" r="${r}" stroke="var(--fill2)" stroke-dasharray="${C} 0"/>`;
   html += `<section class="section"><div class="card hero">
     <div><div class="lbl">Потрачено</div><div class="total num">${fmt(total)}</div>${delta}</div>
-    <div class="donut"><svg viewBox="0 0 104 104">${segs}</svg><div class="c"><b class="num">${cur.length}</b>${plural(cur.length,"трата","траты","трат")}</div></div>
+    <button type="button" class="donut" data-act="chart" aria-label="По категориям"><svg viewBox="0 0 104 104">${segs}</svg><div class="c"><b class="num">${cur.length}</b>${plural(cur.length,"трата","траты","трат")}</div></button>
   </div></section>`;
 
   /* limits */
@@ -425,6 +438,7 @@ document.getElementById("app").addEventListener("click", e => {
   else if (b.dataset.act === "clear") { state.filter = null; render(); }
   else if (b.dataset.act === "limits") { haptic("light"); openLimits(); }
   else if (b.dataset.act === "export") { haptic("light"); openExport(); }
+  else if (b.dataset.act === "chart") { haptic("light"); openChart(); }
   else if (b.dataset.id !== undefined) { haptic("light"); openEdit(Number(b.dataset.id)); }
 });
 document.getElementById("addTop").addEventListener("click", () => { haptic("medium"); openAdd(); });
@@ -650,6 +664,39 @@ function showReceipt(rc){
     };
   };
   render();
+}
+
+/* ---------- Диаграмма по категориям ---------- */
+function openChart(){
+  const d = state.data; if (!d) return;
+  const R = currentRange(d.today);
+  const cur = R ? d.expenses.filter(x => inRange(x, R.from, R.to)) : d.expenses.filter(x => !!x.iso);
+  const total = sum(cur);
+  const byCat = {}; cur.forEach(x => { byCat[x.category] = (byCat[x.category]||0) + x.amount; });
+  const cats = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+  if (!cats.length) { toast("Нет трат за этот период"); return; }
+  const r = 90, C = 2*Math.PI*r; let off = 0;
+  const segs = cats.map(([c,a]) => { const len = a/total*C; const el = `<circle cx="110" cy="110" r="${r}" stroke="${catOf(c).hex}" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" data-c="${esc(c)}"/>`; off += len; return el; }).join("");
+  const period = state.period === "custom" ? (R ? rangeLabel(R.from, R.to) : "всё время") : {day:"сегодня", week:"7 дней", month:"30 дней"}[state.period];
+  let hot = null;
+  openSheet(`<div class="grab"></div>
+    <div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>По категориям</h2><span></span></div>
+    <div class="hint" style="text-align:center">${period} · ${cur.length} ${plural(cur.length,"трата","траты","трат")}</div>
+    <div class="bigchart" id="bigchart"><svg viewBox="0 0 220 220">${segs}</svg><div class="c" id="chartC"><b class="num">${fmt(total)}</b><span>всего</span></div></div>
+    <div class="card legend" id="legend">${cats.map(([c,a]) => `<button type="button" class="row" data-c="${esc(c)}"><div class="ico" style="background:${catOf(c).c};width:30px;height:30px;font-size:15px;border-radius:8px">${catOf(c).e}</div><div class="main"><div class="name">${esc(c)}</div></div><div><div class="amt num">${fmt(a)}</div><div class="sub right num">${(a/total*100).toFixed(1)}%</div></div></button>`).join("")}</div>
+    <div class="hint" style="text-align:center;padding-top:10px">Нажмите на категорию ещё раз, чтобы показать её операции</div>`, () => {
+    document.getElementById("cancel").onclick = closeSheet;
+    const chart = document.getElementById("bigchart"), legend = document.getElementById("legend"), center = document.getElementById("chartC");
+    const select = c => {
+      if (hot === c) { state.filter = c; closeSheet(); render(); haptic("medium"); const el = document.querySelector('.section:nth-of-type(4)'); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
+      hot = c; haptic("light");
+      chart.querySelectorAll("circle").forEach(el => { el.classList.toggle("dim", el.dataset.c !== c); el.classList.toggle("hot", el.dataset.c === c); });
+      legend.querySelectorAll(".row").forEach(el => el.classList.toggle("hot", el.dataset.c === c));
+      const a = byCat[c]; center.innerHTML = `<b class="num">${fmt(a)}</b><span>${esc(c)} · ${(a/total*100).toFixed(1)}%</span>`;
+    };
+    chart.addEventListener("click", e => { const el = e.target.closest("circle"); if (el) select(el.dataset.c); else if (hot) { hot = null; chart.querySelectorAll("circle").forEach(x => x.classList.remove("dim","hot")); legend.querySelectorAll(".row").forEach(x => x.classList.remove("hot")); center.innerHTML = `<b class="num">${fmt(total)}</b><span>всего</span>`; } });
+    legend.addEventListener("click", e => { const el = e.target.closest(".row"); if (el) select(el.dataset.c); });
+  });
 }
 
 /* ---------- Произвольный период: пресеты + календарь ---------- */
