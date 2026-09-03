@@ -58,7 +58,16 @@ if [ -n "$WEBAPP_DOMAIN" ] && command -v nginx >/dev/null; then
   systemctl reload nginx
   if ! grep -q "listen 443" "$SITE"; then
     command -v certbot >/dev/null || apt-get install -y -qq certbot python3-certbot-nginx >/dev/null
-    if certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email --redirect -d "$WEBAPP_DOMAIN"; then
+    ok=0
+    for attempt in 1 2 3 4; do
+      # ждём, если в этот момент работает плановое обновление сертификатов
+      for i in $(seq 1 12); do pgrep -x certbot >/dev/null || break; sleep 5; done
+      if certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email --redirect -d "$WEBAPP_DOMAIN"; then
+        ok=1; break
+      fi
+      echo "…попытка $attempt не удалась, повтор через 15 с"; sleep 15
+    done
+    if [ "$ok" = 1 ]; then
       echo "==> Сертификат получен, https://$WEBAPP_DOMAIN"
     else
       echo "!!  certbot не смог выпустить сертификат для $WEBAPP_DOMAIN (см. вывод выше)"
