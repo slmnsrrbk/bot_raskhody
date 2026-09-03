@@ -90,12 +90,13 @@ def parse_expense(text: str):
     return None
 
 
-def parse_expenses(text: str):
-    """Все траты из свободного текста: строгий разбор, при неудаче — модель."""
+def parse_expenses(text: str, spoken: bool = False):
+    """Все траты из свободного текста: строгий разбор, при неудаче — модель.
+    Для голосовых (spoken=True) сначала модель: речь разговорная, суммы часто словами."""
     items, unparsed = parsing.parse_free_text(text, today())
-    if items and not unparsed:
+    if items and not unparsed and not spoken:
         return items
-    ai_items = ai.parse_expenses_text(text, today())
+    ai_items = ai.parse_expenses_text(text, today(), spoken=spoken)
     if ai_items:
         return [{"name": i["name"], "amount": i["amount"], "date": datetime.date.fromisoformat(i["date"])} for i in ai_items]
     return items
@@ -183,7 +184,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int
     await update.message.reply_text(
         f"👋 Привет, {update.effective_user.first_name}! Я помогу вести учёт расходов.\n\n"
         "Просто напишите, например: `вчера хлеб 200` или `такси 350`.\n"
-        "📷 Пришлите фото чека — я распознаю покупки и добавлю их сами.\n\n"
+        "📷 Пришлите фото чека — я распознаю покупки и добавлю их сами.\n"
+        "🎙 Или запишите голосовое: «такси триста пятьдесят и кофе двести» — добавлю всё, что услышу.\n\n"
         f"{limit_text(user_id)}",
         reply_markup=main_keyboard(),
         parse_mode="Markdown",
@@ -274,11 +276,14 @@ def _batch_text(items) -> str:
     return _items_text(items, f"✅ Добавлено {len(items)} {plural(len(items), 'трата', 'траты', 'трат')} на {fmt(total)}:")
 
 
-async def process_expense(bot, user_id: int, text: str, context=None):
-    items = await in_thread(parse_expenses, text)
+async def process_expense(bot, user_id: int, text: str, context=None, spoken: bool = False):
+    items = await in_thread(parse_expenses, text, spoken)
     if not items:
-        await bot.send_message(user_id, "⚠️ Не понял. Примеры: `такси 350`, `вчера хлеб 200`, или список строк с датами.",
-                               parse_mode="Markdown")
+        if spoken:
+            await bot.send_message(user_id, "🤷 Не нашёл трат в голосовом. Скажите, например: «такси триста пятьдесят и кофе двести».")
+        else:
+            await bot.send_message(user_id, "⚠️ Не понял. Примеры: `такси 350`, `вчера хлеб 200`, или список строк с датами.",
+                                   parse_mode="Markdown")
         return
     # Быстрая категория (словарь/кэш) — сразу; остальное уточнит модель в фоне
     quick = [storage.cache_get(ai.normalize(it["name"]), user_id) or ai.by_keywords(it["name"]) or storage.cache_get(ai.normalize(it["name"])) for it in items]
@@ -360,6 +365,40 @@ async def _show_after_edit(q, context, user_id: int, item_id: int, token: str):
 @guarded
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
     await process_expense(context.bot, user_id, update.message.text, context)
+
+
+MAX_VOICE_SECONDS = 180
+
+
+@guarded
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Голосовое/аудио: расшифровка речи -> траты в свободной форме."""
+    msg = update.message
+    media = msg.voice or msg.audio
+    if not media:
+        return
+    if (media.duration or 0) > MAX_VOICE_SECONDS:
+        await msg.reply_text(f"Голосовое длиннее {MAX_VOICE_SECONDS // 60} минут — запишите покороче.")
+        return
+    if not ai.POLZA_API_KEY:
+        await msg.reply_text("Распознавание речи не настроено. Напишите траты текстом.")
+        return
+    wait = await msg.reply_text("🎙 Слушаю…")
+    try:
+        f = await media.get_file()
+        data = bytes(await f.download_as_bytearray())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Не удалось скачать голосовое: %s", e)
+        await wait.edit_text("Не удалось получить голосовое, попробуйте ещё раз.")
+        return
+    mime = getattr(media, "mime_type", None) or "audio/ogg"
+    ext = {"audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/wav": "wav", "audio/x-wav": "wav"}.get(mime, "ogg")
+    text = await in_thread(ai.transcribe, data, f"voice.{ext}", mime)
+    if not text:
+        await wait.edit_text("🤷 Не разобрал речь. Попробуйте ещё раз или напишите текстом.")
+        return
+    await wait.edit_text(f"🎙 Услышал: «{text[:500]}»")
+    await process_expense(context.bot, user_id, text, context, spoken=True)
 
 
 @guarded
@@ -677,6 +716,7 @@ def build_app(token: str) -> Application:
     app.add_handler(CommandHandler("undo", delete_last))
     app.add_handler(CommandHandler("export", ask_export))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_TODAY}$"), report_today))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_WEEK}$"), report_7))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_MONTH}$"), report_30))

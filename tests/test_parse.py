@@ -160,6 +160,41 @@ class ProcessExpenseTests(StorageTests):
         self.assertEqual(len(Ctx.user_data["receipts"]), 1)
 
 
+    def test_voice_message_goes_through_model_first(self):
+        import asyncio
+        from unittest import mock
+        sent = []
+
+        class FakeMsg:
+            async def edit_text(self, text, reply_markup=None):
+                sent.append(("edit", text))
+
+        class FakeBot:
+            async def send_message(self, chat_id, text, **kw):
+                sent.append(("send", text))
+                return FakeMsg()
+
+        class Ctx:
+            user_data = {}
+
+        def fake_parse(text, today, spoken=False):
+            self.assertTrue(spoken)
+            return [{"name": "такси", "amount": 350, "date": today.isoformat()},
+                    {"name": "кофе", "amount": 200, "date": today.isoformat()}]
+
+        with mock.patch.object(main.ai, "POLZA_API_KEY", "k"), mock.patch.object(main.ai, "parse_expenses_text", side_effect=fake_parse), \
+                mock.patch.object(main.ai, "classify_many", return_value=["Транспорт", "Еда"]):
+            asyncio.run(main.process_expense(FakeBot(), 5, "потратил на такси триста пятьдесят и на кофе двести", Ctx(), spoken=True))
+        names = {i["name"] for i in storage.list_expenses(5)}
+        self.assertEqual({n.lower() for n in names}, {"такси", "кофе"})
+        self.assertIn("Добавлено 2 траты", sent[0][1])
+
+    def test_voice_handler_registered(self):
+        app = main.build_app("123:abc")
+        names = {getattr(h.callback, "__name__", "") for group in app.handlers.values() for h in group}
+        self.assertIn("handle_voice", names)
+
+
 class CustomCategoryTests(StorageTests):
     def test_user_categories(self):
         self.assertEqual(storage.add_user_category(1, "  дети "), "Дети")

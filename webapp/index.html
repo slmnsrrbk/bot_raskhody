@@ -85,24 +85,29 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .sw-c .row + .row::before{display:none}
 .sw-side{position:absolute;top:0;bottom:0;display:flex;z-index:0}
 .sw-left{left:0}.sw-right{right:0}
-.sw-btn{width:92px;height:100%;color:#fff;font-size:15px;font-weight:500;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px}
-.sw-btn svg{width:22px;height:22px}
+.sw-btn{width:72px;height:100%;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.sw-btn svg{width:24px;height:24px;transition:transform .2s}
 .sw-btn.edit{background:var(--blue)}.sw-btn.del{background:var(--red)}
-.sw.full .sw-btn.del{width:100%}
+.sw.full .sw-btn.del{width:100%;align-items:flex-end;padding-right:24px}
+.sw.full .sw-btn.del svg{transform:scale(1.15)}
+.sw.gone{transition:height .32s cubic-bezier(.2,.8,.2,1),opacity .22s,margin .32s;height:0!important;opacity:0}
+.group.gone{transition:height .32s cubic-bezier(.2,.8,.2,1),opacity .22s,margin .32s;height:0!important;opacity:0;margin-bottom:0!important;overflow:hidden}
 .toast.action{pointer-events:auto;display:flex;align-items:center;gap:14px;white-space:nowrap}
 .toast.action button{color:var(--blue);font-weight:600;font-size:14px;filter:brightness(1.4)}
 .spin{width:22px;height:22px;border:2.5px solid var(--fill2);border-top-color:var(--blue);border-radius:50%;animation:sp .8s linear infinite;margin:0 auto}
 @keyframes sp{to{transform:rotate(360deg)}}
 
 /* ---- Period filter (pills, like a bank app) ---- */
-.pf{display:flex;gap:8px;overflow-x:auto;padding:6px 16px 14px;scrollbar-width:none;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity}
+.pf{position:sticky;top:0;z-index:20;display:flex;gap:8px;overflow-x:auto;padding:8px 16px 12px;scrollbar-width:none;-webkit-overflow-scrolling:touch;
+  background:var(--bg);scroll-padding-left:16px}
 .pf::-webkit-scrollbar{display:none}
+.pf::after{content:"";flex:none;width:8px}
 .pf button{flex:none;height:34px;padding:0 14px;border-radius:17px;background:var(--fill);font-size:14px;font-weight:600;color:var(--label);white-space:nowrap;
-  display:flex;align-items:center;gap:6px;scroll-snap-align:start;transition:background .15s,color .15s,transform .1s}
+  display:flex;align-items:center;gap:6px;transition:background .15s,color .15s,transform .1s}
 .pf button:active{transform:scale(.96)}
 .pf button.on{background:var(--label);color:var(--bg)}
 .pf button svg{width:15px;height:15px}
-.sheet .pf{padding-left:0;padding-right:0;margin-top:2px}
+.sheet .pf{position:static;padding-left:0;padding-right:0;margin-top:2px;background:transparent}
 .linkbtn{color:var(--blue);font-size:15px;font-weight:500;padding:6px 10px}
 
 /* ---- Cards ---- */
@@ -110,8 +115,7 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .section-h{font-size:13px;font-weight:400;color:var(--label2);text-transform:uppercase;letter-spacing:.02em;padding:0 16px 7px;display:flex;justify-content:space-between;align-items:center}
 .section-h button{color:var(--blue);text-transform:none;font-size:15px;font-weight:400;letter-spacing:0}
 .card{background:var(--card);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
-.hero{padding:18px 18px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px;
-  animation:rise .5s cubic-bezier(.2,.8,.2,1) both}
+.hero{padding:18px 18px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}
 .hero .lbl{font-size:13px;font-weight:500;color:var(--label2)}
 .hero .total{font-size:36px;font-weight:700;letter-spacing:-.03em;line-height:1.1;margin-top:2px}
 .hero .delta{font-size:13px;font-weight:500;margin-top:8px;display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;background:var(--fill)}
@@ -172,7 +176,7 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .skel{height:56px;background:linear-gradient(90deg,var(--fill) 25%,var(--fill2) 50%,var(--fill) 75%);background-size:200% 100%;animation:sh 1.2s infinite}
 @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
 @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-.section{animation:rise .5s cubic-bezier(.2,.8,.2,1) both}
+#app.first .section{animation:rise .5s cubic-bezier(.2,.8,.2,1) both}
 .section:nth-of-type(2){animation-delay:.05s}.section:nth-of-type(3){animation-delay:.1s}.section:nth-of-type(4){animation-delay:.15s}
 
 /* ---- Sheet ---- */
@@ -422,8 +426,8 @@ function render(){
   const groups = groupsOf(inPeriod), keys = Object.keys(groups).sort().reverse();
   const dayHtml = (k, g) => `<div class="group"><div class="date-h"><span>${dateLabel(k, d.today)}</span><span class="num">−${fmt(sum(g[k]))}</span></div><div class="card">${
     g[k].map(x => { const m = catOf(x.category); return `<div class="sw" data-sw="${x.id}">
-      <div class="sw-side sw-left"><button type="button" class="sw-btn edit" data-edit="${x.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>Изменить</button></div>
-      <div class="sw-side sw-right"><button type="button" class="sw-btn del" data-del="${x.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>Удалить</button></div>
+      <div class="sw-side sw-left"><button type="button" class="sw-btn edit" data-edit="${x.id}" aria-label="Изменить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button></div>
+      <div class="sw-side sw-right"><button type="button" class="sw-btn del" data-del="${x.id}" aria-label="Удалить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button></div>
       <div class="sw-c"><button class="row" data-id="${x.id}">
       <div class="ico" style="background:${m.c}">${m.e}</div>
       <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}</div></div>
@@ -446,8 +450,10 @@ function render(){
     }
   }
   html += `<div class="footer"><button data-act="lock" hidden></button></div>`;
-  document.getElementById("app").innerHTML = html;
-  scrollPills(document.getElementById("app"));
+  const app = document.getElementById("app");
+  app.classList.toggle("first", !state.rendered); state.rendered = true;
+  app.innerHTML = html;
+  scrollPills(app);
 }
 const sum = arr => arr.reduce((s,x)=>s+x.amount,0);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -479,7 +485,7 @@ document.getElementById("addTop").addEventListener("click", () => { haptic("medi
 document.getElementById("mainbtn").addEventListener("click", () => openAdd());
 
 /* ---------- Свайп по строке ---------- */
-const SW_W = 92;
+const SW_W = 72;
 const swipe = { el:null, content:null, x0:0, y0:0, base:0, pos:0, dragging:false, moved:false, openEl:null, ptr:null };
 function swPos(el, x, anim){ el.classList.toggle("anim", !!anim); el.querySelector(".sw-c").style.transform = x ? `translateX(${x}px)` : ""; el.dataset.pos = x; }
 function closeSwipe(){ if (swipe.openEl) { swPos(swipe.openEl, 0, true); swipe.openEl.classList.remove("full"); swipe.openEl = null; } }
@@ -531,11 +537,25 @@ function toastAction(msg, label, fn){
   document.getElementById("toastBtn").onclick = () => { clearTimeout(toastT2); t.classList.remove("show", "action"); fn(); };
   toastT2 = setTimeout(() => t.classList.remove("show", "action"), 5000);
 }
+function collapseRow(el){
+  /* плавно схлопываем строку (или весь день, если строка была последней) */
+  return new Promise(res => {
+    const g = el.closest(".group");
+    const target = g && g.querySelectorAll(".sw").length === 1 ? g : el;
+    target.style.height = target.offsetHeight + "px";
+    target.getBoundingClientRect();
+    requestAnimationFrame(() => target.classList.add("gone"));
+    setTimeout(res, 340);
+  });
+}
 async function deleteWithUndo(id){
   const item = state.data && state.data.expenses.find(x => x.id === id); if (!item) return;
+  const el = document.querySelector(`.sw[data-sw="${id}"]`);
+  swipe.openEl = null;
+  if (el) { swPos(el, -el.clientWidth, true); await collapseRow(el); }
+  state.data.expenses = state.data.expenses.filter(x => x.id !== id); render();
   try {
     await api("/api/expenses/" + id, {method:"DELETE"});
-    swipe.openEl = null; await load(false);
     toastAction(`Удалено: ${item.name}`, "Вернуть", async () => {
       try { await api("/api/expenses", {method:"POST", body: JSON.stringify({name: item.name, amount: item.amount, category: item.category, date: item.iso})}); haptic("ok"); toast("Возвращено"); await load(false); }
       catch(e){ toast(e.message); }

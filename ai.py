@@ -20,6 +20,8 @@ POLZA_MODEL = os.getenv("POLZA_MODEL", "google/gemini-2.5-flash-lite")
 POLZA_FALLBACK_MODEL = os.getenv("POLZA_FALLBACK_MODEL", "openai/gpt-4.1-nano")
 POLZA_VISION_MODEL = os.getenv("POLZA_VISION_MODEL", "google/gemini-2.5-flash-lite")
 POLZA_VISION_FALLBACK_MODEL = os.getenv("POLZA_VISION_FALLBACK_MODEL", "openai/gpt-4.1-mini")
+POLZA_STT_MODEL = os.getenv("POLZA_STT_MODEL", "openai/gpt-4o-mini-transcribe")
+POLZA_STT_FALLBACK_MODEL = os.getenv("POLZA_STT_FALLBACK_MODEL", "openai/whisper-large-v3-turbo")
 CHAD_API_KEY = os.getenv("CHAD_API_KEY", "")
 CHAD_API_URL = "https://ask.chadgpt.ru/api/public/gpt-4o-mini"
 TIMEOUT = 20
@@ -190,19 +192,51 @@ def classify_many(names, user_id=None):
 
 EXPENSES_PROMPT = (
     "Извлеки из сообщения пользователя список трат. Верни ТОЛЬКО JSON-массив вида "
-    '[{"name": "короткое название", "amount": число в рублях, "date": "ГГГГ-ММ-ДД"}]. '
+    '[{{"name": "короткое название", "amount": число в рублях, "date": "ГГГГ-ММ-ДД"}}]. '
     "Сегодня {today}. «Вчера» — это {yesterday}. Строка с датой относится ко всем тратам ниже неё, пока не встретится другая дата. "
     "Если дата не указана — {today}. Если трат нет, верни []."
 )
+SPOKEN_NOTE = (
+    " Это расшифровка голосового сообщения: речь свободная, разговорная. Суммы могут быть словами "
+    "(«триста пятьдесят», «полторы тысячи», «два косаря» = 2000) — переводи в число. «Тысяча»/«тыща»/«к» = 1000. "
+    "В название пиши только предмет траты (например «такси», «продукты», «кофе»), без слов «потратил», «купил», «заплатил», «рублей». "
+    "«Позавчера» — {before_yesterday}."
+)
 
 
-def parse_expenses_text(text: str, today):
-    """Запасной разбор свободного текста моделью. -> список {name, amount, date(ISO)} или None."""
+def transcribe(audio: bytes, filename: str = "voice.ogg", mime: str = "audio/ogg"):
+    """Голосовое -> текст через Polza (OpenAI-совместимый /audio/transcriptions). None при неудаче."""
+    if not POLZA_API_KEY or not audio:
+        return None
+    for model in (POLZA_STT_MODEL, POLZA_STT_FALLBACK_MODEL):
+        try:
+            r = _session.post(
+                f"{POLZA_BASE_URL}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {POLZA_API_KEY}"},
+                files={"file": (filename, audio, mime)},
+                data={"model": model, "language": "ru", "response_format": "json",
+                      "prompt": "Расходы: такси 350, продукты 1200, вчера кофе 200 рублей."},
+                timeout=90,
+            )
+            r.raise_for_status()
+            text = (r.json().get("text") or "").strip()
+            if text:
+                return text
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Polza STT (%s): %s", model, e)
+    return None
+
+
+def parse_expenses_text(text: str, today, spoken: bool = False):
+    """Запасной разбор свободного текста моделью. -> список {name, amount, date(ISO)} или None.
+    spoken=True — текст из голосового: разговорная речь, суммы словами."""
     if not POLZA_API_KEY or not text.strip():
         return None
-    yesterday = (today - __import__("datetime").timedelta(days=1)).isoformat()
-    answer = _polza([{"role": "system", "content": EXPENSES_PROMPT.format(today=today.isoformat(), yesterday=yesterday)},
-                     {"role": "user", "content": text[:4000]}], max_tokens=1200)
+    td = __import__("datetime").timedelta
+    prompt = EXPENSES_PROMPT.format(today=today.isoformat(), yesterday=(today - td(days=1)).isoformat())
+    if spoken:
+        prompt += SPOKEN_NOTE.format(before_yesterday=(today - td(days=2)).isoformat())
+    answer = _polza([{"role": "system", "content": prompt}, {"role": "user", "content": text[:4000]}], max_tokens=1200)
     data = _extract_json_any(answer or "")
     if not isinstance(data, list):
         return None
