@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS user_categories (
+    user_id     INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (user_id, name)
+);
 CREATE TABLE IF NOT EXISTS category_cache (
     name      TEXT PRIMARY KEY,
     category  TEXT NOT NULL
@@ -166,12 +172,57 @@ def _enc(user_id: int, value):
     return None if value is None else crypto.encrypt(user_id, value)
 
 
+# ---------------------------------------------------------------------------
+# Категории: базовый набор + свои у каждого пользователя
+# ---------------------------------------------------------------------------
+MAX_CATEGORY_LEN = 30
+
+
+def normalize_category(name) -> str:
+    n = " ".join(str(name or "").split())[:MAX_CATEGORY_LEN].strip(" .,:;!-—–")
+    return (n[:1].upper() + n[1:]) if n else ""
+
+
+def user_categories(user_id: int):
+    with connect() as con:
+        return [r["name"] for r in con.execute("SELECT name FROM user_categories WHERE user_id=? ORDER BY created_at", (user_id,))]
+
+
+def all_categories(user_id=None):
+    return CATEGORIES + (user_categories(user_id) if user_id is not None else [])
+
+
+def add_user_category(user_id: int, name: str) -> str:
+    """Добавляет свою категорию (если такой ещё нет) и возвращает её нормализованное имя."""
+    n = normalize_category(name)
+    if not n:
+        raise ValueError("Название категории пустое")
+    for c in all_categories(user_id):
+        if c.lower() == n.lower():
+            return c
+    with connect() as con:
+        con.execute("INSERT OR IGNORE INTO user_categories(user_id, name, created_at) VALUES(?,?,?)", (user_id, n, _now()))
+    return n
+
+
+def remove_user_category(user_id: int, name: str):
+    with connect() as con:
+        con.execute("DELETE FROM user_categories WHERE user_id=? AND name=?", (user_id, name))
+
+
+def _valid_category(user_id: int, category) -> str:
+    c = normalize_category(category)
+    for known in all_categories(user_id):
+        if known.lower() == c.lower():
+            return known
+    return "Другое"
+
+
 def add_expense(user_id: int, name: str, amount: int, category: str, date) -> dict:
     iso = to_iso(date)
     name = name.strip()
     name = name[:1].upper() + name[1:]
-    if category not in CATEGORIES:
-        category = "Другое"
+    category = _valid_category(user_id, category)
     with connect() as con:
         cur = con.execute(
             "INSERT INTO expenses(user_id, name, amount, category, date, created_at) VALUES(?,?,?,?,?,?)",
@@ -192,8 +243,8 @@ def update_expense(user_id: int, expense_id: int, **fields):
         allowed["name"] = fields["name"].strip()[:100]
     if "amount" in fields and fields["amount"] is not None:
         allowed["amount"] = int(fields["amount"])
-    if fields.get("category") in CATEGORIES:
-        allowed["category"] = fields["category"]
+    if fields.get("category"):
+        allowed["category"] = _valid_category(user_id, fields["category"])
     if fields.get("date"):
         allowed["date"] = to_iso(fields["date"])
     if not allowed:
@@ -293,19 +344,25 @@ def set_limits(user_id: int, **values) -> dict:
 # ---------------------------------------------------------------------------
 # Кэш «название → категория» (общий для всех пользователей, без личных данных)
 # ---------------------------------------------------------------------------
-def _cache_key(name: str) -> str:
-    return hashlib.sha256(name.strip().lower().encode("utf-8")).hexdigest()
+def _cache_key(name: str, user_id=None) -> str:
+    raw = f"{user_id}:{name.strip().lower()}" if user_id is not None else name.strip().lower()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def cache_get(name: str):
+def cache_get(name: str, user_id=None):
+    """Сначала личный выбор пользователя, потом общий кэш."""
     with connect() as con:
+        if user_id is not None:
+            r = con.execute("SELECT category FROM category_cache WHERE name=?", (_cache_key(name, user_id),)).fetchone()
+            if r:
+                return r["category"]
         r = con.execute("SELECT category FROM category_cache WHERE name=?", (_cache_key(name),)).fetchone()
         return r["category"] if r else None
 
 
-def cache_set(name: str, category: str):
+def cache_set(name: str, category: str, user_id=None):
     with connect() as con:
-        con.execute("INSERT OR REPLACE INTO category_cache(name, category) VALUES(?,?)", (_cache_key(name), category))
+        con.execute("INSERT OR REPLACE INTO category_cache(name, category) VALUES(?,?)", (_cache_key(name, user_id), category))
 
 
 def add_expenses_bulk(user_id: int, items):

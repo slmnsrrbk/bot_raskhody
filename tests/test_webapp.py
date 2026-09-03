@@ -116,6 +116,23 @@ class WebAppApiTests(AioHTTPTestCase):
         self.assertEqual(r.status, 200)
         self.assertEqual((await r.json())["items"][0]["amount"], 518)
 
+    async def test_custom_category_via_edit(self):
+        r = await self.client.get("/api/state")
+        first = (await r.json())["expenses"][0]
+        r = await self.client.put(f"/api/expenses/{first['id']}", json={"category": "Спорт"})
+        self.assertEqual(r.status, 200)
+        self.assertEqual((await r.json())["category"], "Спорт")
+        r = await self.client.get("/api/state")
+        d = await r.json()
+        self.assertIn("Спорт", d["categories"])
+        self.assertEqual(webapp.storage.all_categories(7)[-1], "Другое")   # у другого пользователя нет
+        r = await self.client.post("/api/expenses", json={"name": "Кофе", "amount": 100, "category": "Спорт"})
+        self.assertEqual((await r.json())["category"], "Спорт")
+        r = await self.client.delete("/api/categories/Еда")
+        self.assertEqual(r.status, 400)
+        r = await self.client.delete("/api/categories/Спорт")
+        self.assertNotIn("Спорт", (await r.json())["categories"])
+
     async def test_index_served(self):
         r = await self.client.get("/")
         self.assertEqual(r.status, 200)

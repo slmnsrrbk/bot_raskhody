@@ -249,7 +249,9 @@ const CAT = {
   "Непредвиденные":      {e:"⚡", c:"#FFCC00", hex:"#FFCC00"},
   "Другое":              {e:"🧾", c:"#8E8E93", hex:"#8E8E93"},
 };
-const catOf = c => CAT[c] || CAT["Другое"];
+const EXTRA_COLORS = ["#FF6B6B","#4ECDC4","#FFB703","#8338EC","#3A86FF","#FB5607","#06D6A0","#EF476F","#118AB2","#F4A261"];
+const catOf = c => CAT[c] || { e:"🏷️", c: EXTRA_COLORS[[...String(c)].reduce((a,ch)=>a+ch.charCodeAt(0),0) % EXTRA_COLORS.length], hex: EXTRA_COLORS[[...String(c)].reduce((a,ch)=>a+ch.charCodeAt(0),0) % EXTRA_COLORS.length] };
+const allCats = () => (state.data && state.data.categories) || Object.keys(CAT);
 const NBSP = " ";
 const fmt = n => Math.round(n).toLocaleString("ru-RU").replace(/\s/g, NBSP) + NBSP + "₽";
 const MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
@@ -513,12 +515,19 @@ if (tg) tg.BackButton.onClick(closeSheet);
 function showMain(){ document.getElementById("mainbtn").hidden = false; }
 
 function catPicker(selected){
-  return `<div class="cats" id="cats">${Object.keys(CAT).map(c => `<button type="button" class="cat ${c===selected?"sel":""}" data-c="${c}"><div class="ico" style="background:${CAT[c].c}">${CAT[c].e}</div>${c}</button>`).join("")}</div>`;
+  const cats = allCats().slice(); if (selected && !cats.includes(selected)) cats.push(selected);
+  return `<div class="cats" id="cats">${cats.map(c => { const m = catOf(c); return `<button type="button" class="cat ${c===selected?"sel":""}" data-c="${esc(c)}"><div class="ico" style="background:${m.c}">${m.e}</div>${esc(c)}</button>`; }).join("")}
+    <button type="button" class="cat add" data-add="1"><div class="ico" style="background:var(--fill2);color:var(--label)">＋</div>Своя</button></div>
+    <div class="fields" id="newCatBox" hidden><div class="field"><label>Своя</label><input id="newCat" placeholder="Название категории" maxlength="30" autocomplete="off"></div></div>`;
 }
 function bindCats(){
-  const box = document.getElementById("cats");
-  box.addEventListener("click", e => { const b = e.target.closest(".cat"); if (!b) return; haptic("light"); box.querySelectorAll(".cat").forEach(x=>x.classList.toggle("sel", x===b)); });
-  return () => { const s = box.querySelector(".cat.sel"); return s ? s.dataset.c : ""; };
+  const box = document.getElementById("cats"), nb = document.getElementById("newCatBox");
+  box.addEventListener("click", e => {
+    const b = e.target.closest(".cat"); if (!b) return; haptic("light");
+    box.querySelectorAll(".cat").forEach(x=>x.classList.toggle("sel", x===b));
+    if (b.dataset.add) { nb.hidden = false; document.getElementById("newCat").focus(); } else nb.hidden = true;
+  });
+  return () => { const s = box.querySelector(".cat.sel"); if (!s) return ""; if (s.dataset.add) return document.getElementById("newCat").value.trim(); return s.dataset.c; };
 }
 function formHtml(title, item){
   const today = state.data.today;

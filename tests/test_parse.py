@@ -148,3 +148,24 @@ class ProcessExpenseTests(StorageTests):
         self.assertIn("Добавлено 4 траты", sent[0][1])
         self.assertIn("01.09.2026", sent[0][1])
         self.assertEqual(len(Ctx.user_data["receipts"]), 1)
+
+
+class CustomCategoryTests(StorageTests):
+    def test_user_categories(self):
+        self.assertEqual(storage.add_user_category(1, "  дети "), "Дети")
+        self.assertEqual(storage.add_user_category(1, "ДЕТИ"), "Дети")          # без дублей
+        self.assertEqual(storage.add_user_category(1, "еда"), "Еда")            # базовая не дублируется
+        self.assertIn("Дети", storage.all_categories(1))
+        self.assertNotIn("Дети", storage.all_categories(2))                     # у другого пользователя нет
+        it = storage.add_expense(1, "Садик", 5000, "Дети", "2026-09-03")
+        self.assertEqual(it["category"], "Дети")
+        self.assertEqual(storage.add_expense(2, "Садик", 5000, "Дети", "2026-09-03")["category"], "Другое")
+        storage.cache_set("садик", "Дети", 1)
+        self.assertEqual(main.ai.classify_many(["Садик"], 1), ["Дети"])
+        self.assertEqual(main.ai.classify_many(["Садик"], 2), ["Другое"])
+        with self.assertRaises(ValueError):
+            storage.add_user_category(1, "   ")
+        kb = main._category_kb(1, 5, "-")
+        labels = [b.text for row in kb.inline_keyboard for b in row]
+        self.assertIn("Дети", labels)
+        self.assertIn("➕ Своя категория", labels)

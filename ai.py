@@ -110,52 +110,69 @@ def _chad(message: str):
     return None
 
 
-def _pick_category(answer: str):
+def _pick_category(answer: str, categories=None):
     if not answer:
         return None
-    word = answer.strip().split()[0].strip(".,!:\"'«»").capitalize()
-    return word if word in CATEGORIES else None
+    cats = categories or CATEGORIES
+    text = answer.strip().strip(".,!:\"'«»").lower()
+    for c in sorted(cats, key=len, reverse=True):   # сначала длинные, чтобы «Еда» не перебила «Еда вне дома»
+        if text.startswith(c.lower()):
+            return c
+    return None
 
 
-SYSTEM_PROMPT = (
-    "Ты классификатор личных трат. Ответь одним словом — категорией из списка: "
-    + ", ".join(CATEGORIES) + ". Продукты — покупки в магазинах для дома; Еда — кафе, доставка, перекусы; "
-    "Транспорт — такси и общественный транспорт; Машина — расходы на свой автомобиль. Без пояснений и знаков препинания."
-)
+def _system_prompt(categories):
+    return (
+        "Ты классификатор личных трат. Ответь одним словом или названием категории из списка: "
+        + ", ".join(categories) + ". Продукты — покупки в магазинах для дома; Еда — кафе, доставка, перекусы; "
+        "Транспорт — такси и общественный транспорт; Машина — расходы на свой автомобиль. Без пояснений и знаков препинания."
+    )
 
 
-def detect_category(name: str) -> str:
-    """Категория для названия траты. Порядок: словарь → кэш → Polza AI → ChadGPT → «Другое»."""
+SYSTEM_PROMPT = _system_prompt(CATEGORIES)
+
+
+def detect_category(name: str, user_id=None) -> str:
+    """Категория для названия траты. Порядок: личный выбор → словарь → кэш → Polza AI → ChadGPT → «Другое»."""
     key = normalize(name)
     if not key:
         return DEFAULT
+    cats = storage.all_categories(user_id) if user_id is not None else CATEGORIES
+    if user_id is not None:
+        personal = storage.cache_get(key, user_id)
+        if personal:
+            return personal
     cat = by_keywords(key)
     if cat:
         return cat
     cached = storage.cache_get(key)
-    if cached:
+    if cached and cached in cats:
         return cached
-    cat = _pick_category(_polza([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": name}]))
+    cat = _pick_category(_polza([{"role": "system", "content": _system_prompt(cats)}, {"role": "user", "content": name}]), cats)
     if not cat:
-        cat = _pick_category(_chad(f"Определи категорию для траты '{name}' одним словом. Только: {', '.join(CATEGORIES)}."))
+        cat = _pick_category(_chad(f"Определи категорию для траты '{name}' одним словом. Только: {', '.join(cats)}."), cats)
     if cat:
-        storage.cache_set(key, cat)
+        storage.cache_set(key, cat, user_id if cat not in CATEGORIES else None)
         return cat
     return DEFAULT
 
 
-def classify_many(names):
-    """Категории для списка названий одним запросом (словарь и кэш — без запроса)."""
+def classify_many(names, user_id=None):
+    """Категории для списка названий одним запросом (личный выбор, словарь и кэш — без запроса)."""
+    cats = storage.all_categories(user_id) if user_id is not None else CATEGORIES
     result = [None] * len(names)
     todo = []
     for i, n in enumerate(names):
         key = normalize(n)
-        result[i] = by_keywords(key) or storage.cache_get(key)
+        personal = storage.cache_get(key, user_id) if user_id is not None else None
+        cached = storage.cache_get(key)
+        result[i] = personal or by_keywords(key) or (cached if cached in cats else None)
         if not result[i]:
             todo.append(i)
     if todo and POLZA_API_KEY:
-        prompt = ("Для каждой строки укажи категорию из списка: " + ", ".join(CATEGORIES) +
-                  ". Ответь строго построчно в формате «номер. категория», без пояснений.\n" +
+        prompt = ("Для каждой строки укажи категорию из списка: " + ", ".join(cats) +
+                  ". Продукты — покупки в магазинах для дома, Еда — кафе и доставка. "
+                  "Ответь строго построчно в формате «номер. категория», без пояснений.\n" +
                   "\n".join(f"{k + 1}. {names[i]}" for k, i in enumerate(todo)))
         answer = _polza([{"role": "user", "content": prompt}], max_tokens=20 * len(todo) + 20)
         if answer:
@@ -164,10 +181,10 @@ def classify_many(names):
                 if not m:
                     continue
                 k = int(m.group(1)) - 1
-                cat = _pick_category(m.group(2))
+                cat = _pick_category(m.group(2), cats)
                 if 0 <= k < len(todo) and cat:
                     result[todo[k]] = cat
-                    storage.cache_set(normalize(names[todo[k]]), cat)
+                    storage.cache_set(normalize(names[todo[k]]), cat, user_id if cat not in CATEGORIES else None)
     return [c or DEFAULT for c in result]
 
 

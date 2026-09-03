@@ -23,6 +23,7 @@ from telegram import (
 )
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -55,6 +56,8 @@ CATEGORIES = storage.CATEGORIES
 BTN_TODAY, BTN_WEEK, BTN_MONTH = "Расходы за сегодня", "За 7 дней", "За 30 дней"
 BTN_LIMIT, BTN_DELETE, BTN_APP = "Установить лимит", "🗑 Удалить трату", "📱 Открыть приложение"
 BTN_EXPORT = "📥 Выгрузка"
+BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_MONTH, BTN_LIMIT, BTN_DELETE, BTN_EXPORT, BTN_APP, "🔙 Назад",
+                "Ежедневный лимит", "Еженедельный лимит", "Ежемесячный лимит"}
 
 scheduler = AsyncIOScheduler(timezone=TZ)
 
@@ -187,6 +190,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int
     )
 
 
+async def category_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перехватывает название новой категории, когда бот его ждёт (группа -1)."""
+    pending = context.user_data.get("await_category")
+    msg = update.message
+    if not pending or not msg or not msg.text or msg.text.startswith("/") or msg.text in BUTTON_TEXTS:
+        return
+    try:
+        user_id = register(update)
+        cat = storage.add_user_category(user_id, msg.text)
+    except PermissionError:
+        raise ApplicationHandlerStop
+    except ValueError as e:
+        await msg.reply_text(f"⚠️ {e}")
+        raise ApplicationHandlerStop
+    context.user_data.pop("await_category", None)
+    item = storage.update_expense(user_id, pending["item_id"], category=cat)
+    if item:
+        storage.cache_set(ai.normalize(item["name"]), cat, user_id)
+    text = _single_text(item) if pending["token"] == "-" and item else None
+    if text is None:
+        items = _batch_items(context, user_id, pending["token"])
+        text = _batch_text(items) if items else "Записи уже удалены."
+        kb = _batch_kb(pending["token"]) if items else None
+    else:
+        kb = _single_kb(item["id"])
+    try:
+        await context.bot.edit_message_text(text, chat_id=pending["chat_id"], message_id=pending["message_id"], reply_markup=kb)
+    except Exception:  # noqa: BLE001
+        pass
+    await msg.reply_text(f"✅ Категория «{cat}» добавлена и назначена.")
+    raise ApplicationHandlerStop
+
+
 @guarded
 async def handle_qr_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
     wait = await update.message.reply_text("🔎 Проверяю чек по QR…")
@@ -245,7 +281,7 @@ async def process_expense(bot, user_id: int, text: str, context=None):
                                parse_mode="Markdown")
         return
     # Быстрая категория (словарь/кэш) — сразу; остальное уточнит модель в фоне
-    quick = [ai.by_keywords(it["name"]) or storage.cache_get(ai.normalize(it["name"])) for it in items]
+    quick = [storage.cache_get(ai.normalize(it["name"]), user_id) or ai.by_keywords(it["name"]) or storage.cache_get(ai.normalize(it["name"])) for it in items]
     added = storage.add_expenses_bulk(user_id, [dict(it, category=c or "Другое") for it, c in zip(items, quick)])
     if len(added) == 1:
         msg = await bot.send_message(user_id, _single_text(added[0]), reply_markup=_single_kb(added[0]["id"]))
@@ -264,7 +300,7 @@ async def process_expense(bot, user_id: int, text: str, context=None):
 async def _refine_categories(user_id: int, msg, pending, token, context):
     """Фоновое уточнение категорий моделью и обновление сообщения бота."""
     try:
-        cats = await in_thread(ai.classify_many, [a["name"] for a in pending])
+        cats = await in_thread(ai.classify_many, [a["name"] for a in pending], user_id)
         changed = False
         for a, c in zip(pending, cats):
             if c and c != a["category"]:
@@ -284,15 +320,16 @@ async def _refine_categories(user_id: int, msg, pending, token, context):
         logger.warning("Уточнение категорий: %s", e)
 
 
-def _category_kb(item_id: int, token: str):
+def _category_kb(user_id: int, item_id: int, token: str):
     rows, row = [], []
-    for i, c in enumerate(CATEGORIES):
+    for i, c in enumerate(storage.all_categories(user_id)):
         row.append(InlineKeyboardButton(c, callback_data=f"setcat:{item_id}:{i}:{token}"))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
+    rows.append([InlineKeyboardButton("➕ Своя категория", callback_data=f"newcat:{item_id}:{token}")])
     rows.append([InlineKeyboardButton("🔙 Назад", callback_data=f"back:{item_id}:{token}")])
     return InlineKeyboardMarkup(rows)
 
@@ -537,15 +574,23 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("Эта запись уже удалена.")
             return
         await q.edit_message_text(f"Категория для «{item['name']}» — {fmt(item['amount'])}. Сейчас: {item['category']}. Выберите:",
-                                  reply_markup=_category_kb(int(item_id), token))
+                                  reply_markup=_category_kb(user_id, int(item_id), token))
     elif data.startswith("setcat:"):
         _, item_id, idx, token = data.split(":")
-        cat = CATEGORIES[int(idx)]
+        cats = storage.all_categories(user_id)
+        cat = cats[int(idx)] if int(idx) < len(cats) else "Другое"
         item = storage.update_expense(user_id, int(item_id), category=cat)
         if item:
-            storage.cache_set(ai.normalize(item["name"]), cat)   # запоминаем выбор для будущих трат
+            storage.cache_set(ai.normalize(item["name"]), cat, user_id)   # запоминаем выбор для будущих трат
         await q.answer(f"Категория: {cat}")
         await _show_after_edit(q, context, user_id, int(item_id), token)
+    elif data.startswith("newcat:"):
+        _, item_id, token = data.split(":")
+        context.user_data["await_category"] = {"item_id": int(item_id), "token": token,
+                                               "chat_id": q.message.chat_id, "message_id": q.message.message_id}
+        await q.answer()
+        await q.edit_message_text("Напишите название новой категории (например, «Дети» или «Спорт»):",
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=f"back:{item_id}:{token}")]]))
     elif data.startswith("back:"):
         _, item_id, token = data.split(":")
         await q.answer()
@@ -626,6 +671,7 @@ async def post_shutdown(app: Application):
 def build_app(token: str) -> Application:
     app = Application.builder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
     T = filters.TEXT & ~filters.COMMAND
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, category_gate), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("delete", ask_delete))
     app.add_handler(CommandHandler("undo", delete_last))

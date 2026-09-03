@@ -3,6 +3,7 @@
 Отдельный процесс рядом с main.py, общая база data.db (storage.py). Каждый запрос
 подписан Telegram (initData), данные отдаются только их владельцу. Наружу — через nginx/HTTPS.
 """
+import asyncio
 import datetime
 import hashlib
 import hmac
@@ -155,7 +156,7 @@ async def api_state(request: web.Request):
     uid = request["user_id"]
     return web.json_response({
         "today": today().isoformat(),
-        "categories": CATEGORIES,
+        "categories": storage.all_categories(uid),
         "limits": storage.get_limits(uid),
         "expenses": storage.list_expenses(uid),
         "user": {"id": uid, "first_name": request["user"].get("first_name", "")},
@@ -170,9 +171,11 @@ async def api_add(request: web.Request):
         raise _error(web.HTTPBadRequest, "Укажите название")
     amount = parse_amount(body.get("amount"))
     date = parse_date(body.get("date"))
-    category = body.get("category") or ""
-    if category not in CATEGORIES:
-        category = await request.loop.run_in_executor(None, detect_category, name)
+    category = storage.normalize_category(body.get("category") or "")
+    if category and category.lower() not in {c.lower() for c in storage.all_categories(uid)}:
+        category = storage.add_user_category(uid, category)
+    if not category:
+        category = await asyncio.get_running_loop().run_in_executor(None, detect_category, name, uid)
     return web.json_response(storage.add_expense(uid, name, amount, category, date), status=201)
 
 
@@ -187,11 +190,17 @@ async def api_update(request: web.Request):
         fields["name"] = str(body["name"])
     if "amount" in body:
         fields["amount"] = parse_amount(body["amount"])
-    if "category" in body:
-        fields["category"] = body["category"]
+    if body.get("category"):
+        cat = storage.normalize_category(body["category"])
+        if cat and cat.lower() not in {c.lower() for c in storage.all_categories(uid)}:
+            cat = storage.add_user_category(uid, cat)      # своя категория пользователя
+        fields["category"] = cat
     if "date" in body:
         fields["date"] = parse_date(body["date"])
-    return web.json_response(storage.update_expense(uid, expense_id, **fields))
+    item = storage.update_expense(uid, expense_id, **fields)
+    if item and fields.get("category"):
+        storage.cache_set(ai.normalize(item["name"]), item["category"], uid)   # запоминаем выбор
+    return web.json_response(item)
 
 
 async def api_delete(request: web.Request):
@@ -219,6 +228,25 @@ async def api_limits(request: web.Request):
     return web.json_response(storage.set_limits(uid, **values))
 
 
+async def api_categories_add(request: web.Request):
+    uid = request["user_id"]
+    body = await request.json()
+    try:
+        name = storage.add_user_category(uid, body.get("name", ""))
+    except ValueError as e:
+        raise _error(web.HTTPBadRequest, str(e))
+    return web.json_response({"categories": storage.all_categories(uid), "added": name}, status=201)
+
+
+async def api_categories_delete(request: web.Request):
+    uid = request["user_id"]
+    name = request.match_info["name"]
+    if name in CATEGORIES:
+        raise _error(web.HTTPBadRequest, "Базовую категорию удалить нельзя")
+    storage.remove_user_category(uid, name)
+    return web.json_response({"categories": storage.all_categories(uid)})
+
+
 async def api_bulk(request: web.Request):
     uid = request["user_id"]
     body = await request.json()
@@ -230,7 +258,7 @@ async def api_bulk(request: web.Request):
         name = str(it.get("name", "")).strip()
         if not name:
             continue
-        cat = it.get("category") if it.get("category") in CATEGORIES else (ai.by_keywords(name) or "Другое")
+        cat = it.get("category") if it.get("category") in storage.all_categories(uid) else (ai.by_keywords(name) or "Другое")
         clean.append({"name": name, "amount": parse_amount(it.get("amount")), "category": cat, "date": parse_date(it.get("date"))})
     if not clean:
         raise _error(web.HTTPBadRequest, "Нет позиций для добавления")
@@ -254,7 +282,7 @@ async def api_receipt(request: web.Request):
                     raise _error(web.HTTPRequestEntityTooLarge, "Фото больше 8 МБ")
     if not data:
         raise _error(web.HTTPBadRequest, "Нет фото")
-    parsed = await request.loop.run_in_executor(None, receipt.resolve, data, None, mime if mime.startswith("image/") else "image/jpeg")
+    parsed = await asyncio.get_running_loop().run_in_executor(None, receipt.resolve, data, None, mime if mime.startswith("image/") else "image/jpeg")
     if not parsed or not parsed["items"]:
         raise _error(web.HTTPUnprocessableEntity, "Не удалось разобрать чек. Сфотографируйте ровнее при хорошем свете, чтобы был виден QR-код")
     parsed["date"] = parsed["date"] or today().isoformat()
@@ -267,7 +295,7 @@ async def api_receipt_qr(request: web.Request):
     qr = receipt.find_qr_text(str(body.get("qr", "")))
     if not qr:
         raise _error(web.HTTPBadRequest, "Это не QR-код кассового чека")
-    parsed = await request.loop.run_in_executor(None, receipt.resolve, None, qr)
+    parsed = await asyncio.get_running_loop().run_in_executor(None, receipt.resolve, None, qr)
     if not parsed:
         raise _error(web.HTTPUnprocessableEntity, "Не удалось получить чек по этому QR")
     parsed["date"] = parsed["date"] or today().isoformat()
@@ -290,7 +318,7 @@ async def api_export(request: web.Request):
         label, days = export.PERIODS.get(key, export.PERIODS["30"])
         items = storage.list_expenses(uid, days, today())
         name = export.filename(key, today())
-    data = await request.loop.run_in_executor(None, export.build_xlsx, items, label, today())
+    data = await asyncio.get_running_loop().run_in_executor(None, export.build_xlsx, items, label, today())
     if DEV_MODE or body.get("download"):
         return web.Response(body=data, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
@@ -324,6 +352,8 @@ def make_app() -> web.Application:
     app.router.add_delete(r"/api/expenses/{id:\d+}", api_delete)
     app.router.add_put("/api/limits", api_limits)
     app.router.add_post("/api/expenses/bulk", api_bulk)
+    app.router.add_post("/api/categories", api_categories_add)
+    app.router.add_delete("/api/categories/{name}", api_categories_delete)
     app.router.add_post("/api/receipt", api_receipt)
     app.router.add_post("/api/receipt/qr", api_receipt_qr)
     app.router.add_post("/api/export", api_export)
