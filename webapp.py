@@ -176,7 +176,8 @@ async def api_add(request: web.Request):
         category = storage.add_user_category(uid, category)
     if not category:
         category = await asyncio.get_running_loop().run_in_executor(None, detect_category, name, uid)
-    return web.json_response(storage.add_expense(uid, name, amount, category, date), status=201)
+    note = str(body.get("note") or "")
+    return web.json_response(storage.add_expense(uid, name, amount, category, date, note), status=201)
 
 
 async def api_update(request: web.Request):
@@ -197,6 +198,8 @@ async def api_update(request: web.Request):
         fields["category"] = cat
     if "date" in body:
         fields["date"] = parse_date(body["date"])
+    if "note" in body:
+        fields["note"] = str(body["note"] or "")
     item = storage.update_expense(uid, expense_id, **fields)
     if item and fields.get("category"):
         storage.cache_set(ai.normalize(item["name"]), item["category"], uid)   # запоминаем выбор
@@ -259,7 +262,8 @@ async def api_bulk(request: web.Request):
         if not name:
             continue
         cat = it.get("category") if it.get("category") in storage.all_categories(uid) else (ai.by_keywords(name) or "Другое")
-        clean.append({"name": name, "amount": parse_amount(it.get("amount")), "category": cat, "date": parse_date(it.get("date"))})
+        clean.append({"name": name, "amount": parse_amount(it.get("amount")), "category": cat, "date": parse_date(it.get("date")),
+                      "note": str(it.get("note") or "")})
     if not clean:
         raise _error(web.HTTPBadRequest, "Нет позиций для добавления")
     added = storage.add_expenses_bulk(uid, clean)

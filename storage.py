@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS expenses (
     amount      TEXT NOT NULL,
     category    TEXT NOT NULL,
     date        TEXT NOT NULL,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    note        TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_expenses_user_date ON expenses(user_id, date);
 CREATE TABLE IF NOT EXISTS limits (
@@ -90,6 +91,9 @@ def connect():
 def init_db():
     with connect() as con:
         con.executescript(SCHEMA)
+        cols = {r[1] for r in con.execute("PRAGMA table_info(expenses)").fetchall()}
+        if "note" not in cols:                      # база, созданная до появления заметок
+            con.execute("ALTER TABLE expenses ADD COLUMN note TEXT")
         # Записи, зашифрованные другой схемой (другим ключом), прочитать нельзя — удаляем.
         pat = crypto.PREFIX + "%"
         n = con.execute("DELETE FROM expenses WHERE name LIKE 'enc%' AND name NOT LIKE ?", (pat,)).rowcount
@@ -191,8 +195,10 @@ def all_user_ids():
 # ---------------------------------------------------------------------------
 def _row(r) -> dict:
     uid = r["user_id"]
+    note = r["note"] if "note" in r.keys() else None
     return {"id": r["id"], "name": crypto.decrypt(uid, r["name"]), "amount": int(crypto.decrypt(uid, r["amount"])),
-            "category": crypto.decrypt(uid, r["category"]), "iso": r["date"], "date": to_display(r["date"])}
+            "category": crypto.decrypt(uid, r["category"]), "iso": r["date"], "date": to_display(r["date"]),
+            "note": crypto.decrypt(uid, note) if note else ""}
 
 
 def _enc(user_id: int, value):
@@ -245,15 +251,24 @@ def _valid_category(user_id: int, category) -> str:
     return "Другое"
 
 
-def add_expense(user_id: int, name: str, amount: int, category: str, date) -> dict:
+NOTE_MAX = 300
+
+
+def _clean_note(note) -> str:
+    return " ".join(str(note or "").split())[:NOTE_MAX]
+
+
+def add_expense(user_id: int, name: str, amount: int, category: str, date, note: str = None) -> dict:
     iso = to_iso(date)
     name = name.strip()
     name = name[:1].upper() + name[1:]
     category = _valid_category(user_id, category)
+    note = _clean_note(note)
     with connect() as con:
         cur = con.execute(
-            "INSERT INTO expenses(user_id, name, amount, category, date, created_at) VALUES(?,?,?,?,?,?)",
-            (user_id, _enc(user_id, name[:100]), _enc(user_id, int(amount)), _enc(user_id, category), iso, _now()),
+            "INSERT INTO expenses(user_id, name, amount, category, date, created_at, note) VALUES(?,?,?,?,?,?,?)",
+            (user_id, _enc(user_id, name[:100]), _enc(user_id, int(amount)), _enc(user_id, category), iso, _now(),
+             _enc(user_id, note) if note else None),
         )
         return _row(con.execute("SELECT * FROM expenses WHERE id=?", (cur.lastrowid,)).fetchone())
 
@@ -274,9 +289,11 @@ def update_expense(user_id: int, expense_id: int, **fields):
         allowed["category"] = _valid_category(user_id, fields["category"])
     if fields.get("date"):
         allowed["date"] = to_iso(fields["date"])
+    if "note" in fields:
+        allowed["note"] = _clean_note(fields["note"])
     if not allowed:
         return get_expense(user_id, expense_id)
-    values = [v if k == "date" else _enc(user_id, v) for k, v in allowed.items()]
+    values = [v if k == "date" else (None if k == "note" and not v else _enc(user_id, v)) for k, v in allowed.items()]
     sets = ", ".join(f"{k}=?" for k in allowed)
     with connect() as con:
         con.execute(f"UPDATE expenses SET {sets} WHERE id=? AND user_id=?", (*values, expense_id, user_id))
@@ -394,7 +411,8 @@ def cache_set(name: str, category: str, user_id=None):
 
 def add_expenses_bulk(user_id: int, items):
     """Добавляет несколько трат за раз; возвращает список записей."""
-    return [add_expense(user_id, it["name"], it["amount"], it.get("category", "Другое"), it.get("date") or datetime.date.today())
+    return [add_expense(user_id, it["name"], it["amount"], it.get("category", "Другое"), it.get("date") or datetime.date.today(),
+                        it.get("note"))
             for it in items]
 
 

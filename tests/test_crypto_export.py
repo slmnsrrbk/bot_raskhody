@@ -74,7 +74,7 @@ class ExportTests(unittest.TestCase):
         wb = load_workbook(io.BytesIO(data))
         self.assertEqual(wb.sheetnames, ["Расходы", "По категориям", "По месяцам", "Инфо"])
         ws = wb["Расходы"]
-        self.assertEqual([c.value for c in ws[1]], ["Дата", "Название", "Категория", "Сумма"])
+        self.assertEqual([c.value for c in ws[1]], ["Дата", "Название", "Категория", "Сумма", "Заметка"])
         self.assertEqual(ws["B2"].value, "Такси")  # по возрастанию даты
         self.assertEqual(ws["D4"].value, None)
         self.assertEqual(ws["D5"].value, 730)

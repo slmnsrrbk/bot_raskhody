@@ -63,6 +63,17 @@ class WebAppApiTests(AioHTTPTestCase):
         self.assertEqual(r.status, 200)
         self.assertEqual(len(webapp.storage.list_expenses(0)), 2)
 
+    async def test_note_is_optional_and_editable(self):
+        r = await self.client.post("/api/expenses", json={"name": "обед", "amount": 300, "category": "Еда", "date": "2026-09-01", "note": "  с коллегами  "})
+        item = await r.json()
+        self.assertEqual(item["note"], "с коллегами")
+        r = await self.client.put(f"/api/expenses/{item['id']}", json={"note": ""})
+        self.assertEqual((await r.json())["note"], "")
+        r = await self.client.put(f"/api/expenses/{item['id']}", json={"note": "x" * 500})
+        self.assertEqual(len((await r.json())["note"]), 300)
+        state = await (await self.client.get("/api/state")).json()
+        self.assertIn("note", state["expenses"][0])
+
     async def test_validation(self):
         r = await self.client.post("/api/expenses", json={"name": "x", "amount": "abc"})
         self.assertEqual(r.status, 400)

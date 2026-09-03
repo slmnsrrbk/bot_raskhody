@@ -119,6 +119,13 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .section{margin:0 16px 22px}
 .section-h{font-size:13px;font-weight:400;color:var(--label2);text-transform:uppercase;letter-spacing:.02em;padding:0 16px 7px;display:flex;justify-content:space-between;align-items:center}
 .section-h button{color:var(--blue);text-transform:none;font-size:15px;font-weight:400;letter-spacing:0}
+.section-h .fbtn{display:inline-flex;align-items:center;gap:5px;vertical-align:middle}
+.section-h .fbtn svg{width:16px;height:16px}
+.section-h .fbtn.on{font-weight:600}
+.fsum{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 4px 10px;font-size:13px;color:var(--label2)}
+.fsum .tag{background:var(--fill);border-radius:999px;padding:4px 10px;color:var(--label);font-weight:500}
+.fsum button{color:var(--blue);font-size:13px;font-weight:500}
+.frange{display:flex;gap:10px}.frange .fields{flex:1;min-width:0}.frange .field label{width:auto}
 .card{background:var(--card);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
 .hero{padding:18px 18px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}
 .hero .lbl{font-size:13px;font-weight:500;color:var(--label2)}
@@ -413,7 +420,7 @@ const DAYS_STEP = 60;
 function feedDays(){
   /* все дни с операциями, новые сверху; фильтр по категории — на всю ленту */
   const d = state.data;
-  const list = (state.filter ? d.expenses.filter(x=>x.category===state.filter) : d.expenses).filter(x => !!x.iso);
+  const list = applyFilter(d.expenses).filter(x => !!x.iso);
   const g = {}; list.forEach(x => (g[x.iso] ||= []).push(x));
   return { groups: g, keys: Object.keys(g).sort().reverse() };
 }
@@ -424,7 +431,7 @@ function dayHtml(k, rows, todayIso){
       <div class="sw-side sw-right"><button type="button" class="sw-btn del" data-del="${x.id}" aria-label="Удалить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button></div>
       <div class="sw-c"><button class="row" data-id="${x.id}">
       <div class="ico" style="background:${m.c}">${m.e}</div>
-      <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}</div></div>
+      <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}${x.note ? " · " + esc(x.note) : ""}</div></div>
       <div class="amt num">−${fmt(x.amount)}</div></button></div></div>`; }).join("")}</div></div>`;
 }
 function appendDays(){
@@ -469,11 +476,13 @@ function render(){
   const { groups, keys } = feedDays();
   state.shown = Math.min(keys.length, Math.max(state.shown || 0, DAYS_STEP));
   const txHtml = keys.slice(0, state.shown).map(k => dayHtml(k, groups[k], d.today)).join("");
-  const title = state.filter ? esc(state.filter) : "Операции";
-  const emptyMsg = state.filter
-    ? `<div class="card"><div class="empty"><div class="big">🗂</div>В категории «${esc(state.filter)}» пока нет трат</div></div>`
+  const fOn = filterActive(), nAll = keys.reduce((n, k) => n + groups[k].length, 0);
+  const funnel = `<svg viewBox="0 0 24 24" fill="${fOn ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z"/></svg>`;
+  const emptyMsg = fOn
+    ? `<div class="card"><div class="empty"><div class="big">🔍</div>По фильтру ничего не найдено</div></div>`
     : `<div class="card"><div class="empty"><div class="big">💤</div>Пока пусто. Нажмите «+», чтобы добавить первую трату, или напишите боту: <b>такси 350</b></div></div>`;
-  html += `<section class="section" id="feed"><div class="section-h"><span>${title}</span><span>${state.filter ? `<button data-act="clear">Сбросить</button> · ` : ""}<button data-act="export">Выгрузить</button></span></div>
+  html += `<section class="section" id="feed"><div class="section-h"><span>Операции</span><span><button type="button" class="fbtn ${fOn?"on":""}" data-act="filter">${funnel}Фильтр</button> · <button data-act="export">Выгрузить</button></span></div>
+    ${fOn ? `<div class="fsum">${filterSummary().map(t => `<span class="tag">${esc(t)}</span>`).join("")}<span>${nAll} ${plural(nAll,"операция","операции","операций")}</span><button type="button" data-act="clear">Сбросить</button></div>` : ""}
     ${txHtml || emptyMsg}${keys.length > state.shown ? `<div id="sentinel" style="height:1px"></div>` : ""}</section>`;
   html += `<div class="footer"><button data-act="lock" hidden></button></div>`;
   const app = document.getElementById("app");
@@ -549,8 +558,8 @@ document.getElementById("app").addEventListener("click", e => {
   if (b.dataset.edit !== undefined) { haptic("light"); closeSwipe(); openEdit(Number(b.dataset.edit)); return; }
   if (b.dataset.del !== undefined) { haptic("medium"); deleteWithUndo(Number(b.dataset.del)); return; }
   if (swipe.openEl) { const inOpen = swipe.openEl.contains(b); closeSwipe(); if (inOpen) return; }
-  if (b.dataset.cat !== undefined) { haptic("light"); state.filter = state.filter === b.dataset.cat ? null : b.dataset.cat; render(); }
-  else if (b.dataset.act === "clear") { state.filter = null; render(); }
+  if (b.dataset.act === "filter") { haptic("light"); openFilter(); }
+  else if (b.dataset.act === "clear") { haptic("light"); state.filter = null; render(); }
   else if (b.dataset.p !== undefined) { pickPeriod(b.dataset.p); }
   else if (b.dataset.act === "limits") { haptic("light"); openLimits(); }
   else if (b.dataset.act === "export") { haptic("light"); openExport(); }
@@ -634,7 +643,7 @@ async function deleteWithUndo(id){
   try {
     await api("/api/expenses/" + id, {method:"DELETE"});
     toastAction(`Удалено: ${item.name}`, "Вернуть", async () => {
-      try { await api("/api/expenses", {method:"POST", body: JSON.stringify({name: item.name, amount: item.amount, category: item.category, date: item.iso})}); haptic("ok"); toast("Возвращено"); await load(false); }
+      try { await api("/api/expenses", {method:"POST", body: JSON.stringify({name: item.name, amount: item.amount, category: item.category, date: item.iso, note: item.note || ""})}); haptic("ok"); toast("Возвращено"); await load(false); }
       catch(e){ toast(e.message); }
     });
   } catch(e){ haptic("err"); toast(e.message); await load(false); }
@@ -682,6 +691,7 @@ function formHtml(title, item){
   <div class="name-field"><input id="name" enterkeyhint="done" placeholder="Название: кофе, такси…" value="${item?esc(item.name):""}" autocomplete="off" autocapitalize="sentences"></div>
   <div class="fields">
     <div class="field"><label>Дата</label><input id="date" type="date" value="${item?item.iso:today}" max="${today}"></div>
+    <div class="field"><label>Заметка</label><input id="note" placeholder="необязательно" maxlength="300" autocomplete="off" value="${item?esc(item.note||""):""}"></div>
   </div>
   ${item ? `<div class="hint">Категория</div>${catPicker(item.category)}<button type="button" class="danger" id="del">Удалить трату</button>`
          : `<div class="hint">Категория определится автоматически. Изменить можно позже: нажмите на трату или свайпните её вправо.</div>`}`;
@@ -695,7 +705,7 @@ function openAdd(){
   openSheet(formHtml("Новая трата", null), () => {
     const amount = document.getElementById("amount");
     amount.focus({preventScroll:true});   // синхронно в обработчике касания — так iOS сразу показывает клавиатуру
-    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: "" }, "POST", "/api/expenses", "Добавлено");
+    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: "", note: val("note") }, "POST", "/api/expenses", "Добавлено");
     wireEnter(save);
     document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("save").onclick = save;
@@ -705,7 +715,7 @@ function openEdit(id){
   const item = state.data.expenses.find(x=>x.id===id); if (!item) return;
   openSheet(formHtml("Изменить", item), () => {
     const getCat = bindCats();
-    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat() }, "PUT", "/api/expenses/"+id, "Сохранено");
+    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat(), note: val("note") }, "PUT", "/api/expenses/"+id, "Сохранено");
     wireEnter(save);
     document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("save").onclick = save;
@@ -853,6 +863,58 @@ function showReceipt(rc){
   render();
 }
 
+/* ---------- Фильтр операций: категории и сумма от/до ---------- */
+function filterActive(){ const f = state.filter; return !!(f && ((f.cats && f.cats.length) || f.min != null || f.max != null)); }
+function applyFilter(list){
+  const f = state.filter; if (!filterActive()) return list;
+  const cats = f.cats && f.cats.length ? new Set(f.cats) : null;
+  return list.filter(x => (!cats || cats.has(x.category)) && (f.min == null || x.amount >= f.min) && (f.max == null || x.amount <= f.max));
+}
+function filterSummary(){
+  const f = state.filter, out = [];
+  if (f.cats && f.cats.length) out.push(f.cats.length <= 2 ? f.cats.join(", ") : `${f.cats.length} ${plural(f.cats.length,"категория","категории","категорий")}`);
+  if (f.min != null && f.max != null) out.push(`${fmt(f.min)} – ${fmt(f.max)}`);
+  else if (f.min != null) out.push(`от ${fmt(f.min)}`);
+  else if (f.max != null) out.push(`до ${fmt(f.max)}`);
+  return out;
+}
+function openFilter(){
+  const f = state.filter || {}, sel = new Set(f.cats || []);
+  const cats = allCats().slice();
+  (state.data.expenses.map(x => x.category)).forEach(c => { if (!cats.includes(c)) cats.push(c); });
+  const num = v => { const n = parseFloat(String(v).replace(/\s/g, "").replace(",", ".")); return isFinite(n) && n >= 0 ? Math.round(n) : null; };
+  const count = () => { const min = num(val("fmin")), max = num(val("fmax")); const cs = sel.size ? sel : null;
+    return state.data.expenses.filter(x => !!x.iso && (!cs || cs.has(x.category)) && (min == null || x.amount >= min) && (max == null || x.amount <= max)).length; };
+  openSheet(`<div class="grab"></div>
+    <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Фильтр</h2><button type="button" class="primary" id="apply">Готово</button></div>
+    <div class="hint">Категории</div>
+    <div class="cats" id="fcats">${cats.map(c => { const m = catOf(c); return `<button type="button" class="cat ${sel.has(c)?"sel":""}" data-c="${esc(c)}"><div class="ico" style="background:${m.c}">${m.e}</div>${esc(c)}</button>`; }).join("")}</div>
+    <div class="hint">Сумма</div>
+    <div class="frange">
+      <div class="fields"><div class="field"><label>От</label><input id="fmin" inputmode="numeric" placeholder="0" value="${f.min != null ? f.min : ""}"></div></div>
+      <div class="fields"><div class="field"><label>До</label><input id="fmax" inputmode="numeric" placeholder="∞" value="${f.max != null ? f.max : ""}"></div></div>
+    </div>
+    <button type="button" class="bigbtn" id="fshow"></button>
+    <button type="button" class="danger" id="freset" ${filterActive() ? "" : "hidden"}>Сбросить фильтр</button>`, () => {
+    const showBtn = document.getElementById("fshow");
+    const refresh = () => { const n = count(); showBtn.textContent = n ? `Показать ${n} ${plural(n,"операцию","операции","операций")}` : "Ничего не найдено"; };
+    refresh();
+    document.getElementById("fcats").addEventListener("click", e => { const b = e.target.closest(".cat"); if (!b) return; haptic("light"); const c = b.dataset.c; sel.has(c) ? sel.delete(c) : sel.add(c); b.classList.toggle("sel", sel.has(c)); refresh(); });
+    ["fmin","fmax"].forEach(id => document.getElementById(id).addEventListener("input", refresh));
+    const apply = () => {
+      let min = num(val("fmin")), max = num(val("fmax"));
+      if (min != null && max != null && min > max) [min, max] = [max, min];
+      state.filter = { cats: [...sel], min, max };
+      if (!filterActive()) state.filter = null;
+      haptic("ok"); closeSheet(); render();
+      const el = document.getElementById("feed"); if (el && filterActive()) el.scrollIntoView({behavior:"smooth", block:"start"});
+    };
+    document.getElementById("apply").onclick = apply; showBtn.onclick = apply;
+    document.getElementById("cancel").onclick = closeSheet;
+    document.getElementById("freset").onclick = () => { haptic("light"); state.filter = null; closeSheet(); render(); };
+  });
+}
+
 /* ---------- Диаграмма по категориям ---------- */
 function openChart(){
   const d = state.data; if (!d) return;
@@ -880,7 +942,7 @@ function openChart(){
     if (!cats.length) return;
     const chart = document.getElementById("bigchart"), legend = document.getElementById("legend"), center = document.getElementById("chartC");
     const select = c => {
-      if (hot === c) { state.filter = c; closeSheet(); render(); haptic("medium"); const el = document.querySelector('.section:nth-of-type(4)'); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
+      if (hot === c) { state.filter = { cats: [c], min: null, max: null }; closeSheet(); render(); haptic("medium"); const el = document.querySelector('.section:nth-of-type(4)'); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
       hot = c; haptic("light");
       chart.querySelectorAll("circle").forEach(el => { el.classList.toggle("dim", el.dataset.c !== c); el.classList.toggle("hot", el.dataset.c === c); });
       legend.querySelectorAll(".row").forEach(el => el.classList.toggle("hot", el.dataset.c === c));

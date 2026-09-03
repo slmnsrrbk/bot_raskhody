@@ -232,6 +232,33 @@ class ProcessExpenseTests(StorageTests):
         self.assertIn("handle_voice", names)
 
 
+class NoteMigrationTests(unittest.TestCase):
+    def test_old_database_gets_note_column(self):
+        import sqlite3
+        from pathlib import Path
+        tmp = tempfile.mkdtemp()
+        old_db, old_key = storage.DB_FILE, crypto.KEY_FILE
+        storage.DB_FILE, crypto.KEY_FILE = Path(tmp) / "old.db", Path(tmp) / ".k"
+        crypto.reset_cache()
+        try:
+            con = sqlite3.connect(storage.DB_FILE)
+            con.executescript("""CREATE TABLE expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+                name TEXT NOT NULL, amount TEXT NOT NULL, category TEXT NOT NULL, date TEXT NOT NULL, created_at TEXT NOT NULL);""")
+            con.commit(); con.close()
+            storage.init_db()
+            item = storage.add_expense(3, "кофе", 200, "Еда", "2026-09-01", note="утром")
+            self.assertEqual(item["note"], "утром")
+            self.assertEqual(storage.update_expense(3, item["id"], note=None)["note"], "")
+            # заметка хранится зашифрованной
+            con = sqlite3.connect(storage.DB_FILE)
+            raw = con.execute("SELECT note FROM expenses WHERE id=?", (storage.add_expense(3, "чай", 100, "Еда", "2026-09-01", note="секрет")["id"],)).fetchone()[0]
+            con.close()
+            self.assertTrue(raw.startswith("enc") and "секрет" not in raw)
+        finally:
+            storage.DB_FILE, crypto.KEY_FILE = old_db, old_key
+            crypto.reset_cache()
+
+
 class CustomCategoryTests(StorageTests):
     def test_user_categories(self):
         self.assertEqual(storage.add_user_category(1, "  дети "), "Дети")

@@ -32,11 +32,11 @@ def build_xlsx(items, period_label: str, today: datetime.date) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Расходы"
-    _header(ws, ["Дата", "Название", "Категория", "Сумма"])
+    _header(ws, ["Дата", "Название", "Категория", "Сумма", "Заметка"])
     total = 0
     for it in sorted(items, key=lambda x: (x["iso"], x["id"])):
         d = datetime.date.fromisoformat(it["iso"])
-        ws.append([d, it["name"], it["category"], it["amount"]])
+        ws.append([d, it["name"], it["category"], it["amount"], it.get("note") or ""])
         ws.cell(ws.max_row, 1).number_format = "DD.MM.YYYY"
         ws.cell(ws.max_row, 4).number_format = MONEY
         total += it["amount"]
@@ -47,7 +47,7 @@ def build_xlsx(items, period_label: str, today: datetime.date) -> bytes:
     ws.cell(ws.max_row, 4).number_format = MONEY
     if items:
         ws.auto_filter.ref = f"A1:D{len(items) + 1}"
-    _autosize(ws, [12, 36, 16, 14])
+    _autosize(ws, [12, 36, 16, 14, 30])
 
     cats = {}
     for it in items:
