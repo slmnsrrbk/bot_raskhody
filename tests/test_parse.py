@@ -102,6 +102,16 @@ class BotBuildTests(StorageTests):
         for expected in ("start", "handle_message", "handle_qr_text", "handle_photo", "ask_delete", "ask_export", "on_callback"):
             self.assertIn(expected, names)
 
+    def test_cache_reset_on_category_version_change(self):
+        storage.cache_set("мясо в дом", "Еда")
+        with storage.connect() as con:
+            con.execute("UPDATE meta SET value='1' WHERE key='categories_version'")
+        storage.init_db()
+        self.assertIsNone(storage.cache_get("мясо в дом"))
+        storage.cache_set("мясо в дом", "Продукты")
+        storage.init_db()
+        self.assertEqual(storage.cache_get("мясо в дом"), "Продукты")  # без смены версии кэш живёт
+
     def test_foreign_scheme_rows_removed(self):
         import sqlite3
         raw = sqlite3.connect(storage.DB_FILE)

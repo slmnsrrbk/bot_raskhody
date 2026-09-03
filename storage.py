@@ -24,6 +24,7 @@ LEGACY_LIMITS = BASE_DIR / "limits.json"
 CATEGORIES = ["Еда", "Продукты", "Транспорт", "Машина", "Жильё", "Телефон", "Здоровье", "Одежда",
               "Развлечения", "Работа", "Благотворительность", "Непредвиденные", "Другое"]
 DATE_FMT = "%d.%m.%Y"  # формат для показа в боте; в базе — ISO ГГГГ-ММ-ДД
+CATEGORIES_VERSION = "2"  # при смене набора категорий кэш «название → категория» сбрасывается
 
 _lock = threading.Lock()
 
@@ -92,6 +93,11 @@ def init_db():
             logging.getLogger("storage").warning("Удалено %s записей другой схемы шифрования", n)
     crypto.master_key()  # создаёт .data_key при первом запуске
     _encrypt_legacy_rows()
+    with connect() as con:
+        r = con.execute("SELECT value FROM meta WHERE key='categories_version'").fetchone()
+        if not r or r["value"] != CATEGORIES_VERSION:
+            con.execute("DELETE FROM category_cache")
+            con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('categories_version', ?)", (CATEGORIES_VERSION,))
 
 
 def _encrypt_legacy_rows():
