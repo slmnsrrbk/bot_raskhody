@@ -1,6 +1,6 @@
 # Секреты и локальные данные — никогда не коммитить
 .env
-credentials.json
+expenses.json
 *.pem
 id_rsa*
 id_ed25519*

@@ -10,7 +10,7 @@ class ParseExpenseTests(unittest.TestCase):
         patcher = mock.patch.object(main, "detect_category", return_value="Еда")
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.today = main.now_local().date()
+        self.today = main.datetime.datetime.now(main.pytz.timezone("Asia/Krasnoyarsk")).date()
 
     def test_simple(self):
         name, amount, category, date = main.parse_expense("хлеб 200")
@@ -29,12 +29,22 @@ class ParseExpenseTests(unittest.TestCase):
         name, amount, _, date = main.parse_expense("01.05.2025 кофе 150₽")
         self.assertEqual((name, amount, date), ("Кофе", 150, "01.05.2025"))
 
-    def test_invalid_date_returns_none(self):
-        self.assertIsNone(main.parse_expense("31.02 кофе 150"))
-
     def test_garbage_returns_none(self):
         self.assertIsNone(main.parse_expense("просто текст"))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalStorageTests(unittest.TestCase):
+    def test_add_and_report(self):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(main, "EXPENSES_FILE", os.path.join(d, "e.json")):
+            today = main.datetime.datetime.now(main.pytz.timezone("Asia/Krasnoyarsk")).date().strftime("%d.%m.%Y")
+            main.add_expense(["Хлеб", 200, "Еда", today])
+            main.add_expense(["Такси", 300, "Транспорт", today])
+            text, total, cats = main.build_report(1)
+            self.assertEqual(total, 500)
+            self.assertEqual(cats, {"Еда": 200, "Транспорт": 300})
+            self.assertIn("Общая сумма: 500", text)

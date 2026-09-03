@@ -6,7 +6,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/root/bot
-EnvironmentFile=/root/bot/.env
 ExecStart=/root/bot/venv/bin/python /root/bot/main.py
 Restart=always
 RestartSec=5
