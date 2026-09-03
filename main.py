@@ -32,6 +32,7 @@ from telegram.ext import (
 
 import ai
 import export
+import parsing
 import receipt
 import storage
 
@@ -78,33 +79,23 @@ async def in_thread(func, *args):
 # Разбор сообщения «вчера хлеб 200»
 # ---------------------------------------------------------------------------
 def parse_expense(text: str):
-    """-> (name, amount, date) или None."""
-    text = text.lower().replace("₽", "").replace("руб.", "").replace("руб", "").strip()
-    date = today()
-    if text.startswith("вчера"):
-        date -= datetime.timedelta(days=1)
-        text = text[len("вчера"):].strip()
-    elif text.startswith("сегодня"):
-        text = text[len("сегодня"):].strip()
+    """Одна трата из строки -> (name, amount, date) или None (совместимость)."""
+    items, unparsed = parsing.parse_free_text(text, today())
+    if len(items) == 1 and not unparsed:
+        it = items[0]
+        return it["name"], it["amount"], it["date"]
+    return None
 
-    m = re.match(r"(\d{1,2})[./](\d{1,2})(?:[./](\d{4}))?", text)
-    if m:
-        day, month, year = map(int, m.groups(default=str(date.year)))
-        try:
-            date = datetime.date(year, month, day)
-        except ValueError:
-            return None
-        text = text[m.end():].strip()
 
-    m = re.match(r"(.+?)\s+(\d+)\s*$", text) or re.match(r"(\d+)\s+(.+?)\s*$", text)
-    if not m:
-        return None
-    a, b = m.group(1), m.group(2)
-    name, amount = (a, b) if b.isdigit() else (b, a)
-    amount = int(amount)
-    if amount <= 0 or amount > 100_000_000:
-        return None
-    return name.strip().capitalize(), amount, date
+def parse_expenses(text: str):
+    """Все траты из свободного текста: строгий разбор, при неудаче — модель."""
+    items, unparsed = parsing.parse_free_text(text, today())
+    if items and not unparsed:
+        return items
+    ai_items = ai.parse_expenses_text(text, today())
+    if ai_items:
+        return [{"name": i["name"], "amount": i["amount"], "date": datetime.date.fromisoformat(i["date"])} for i in ai_items]
+    return items
 
 
 # ---------------------------------------------------------------------------

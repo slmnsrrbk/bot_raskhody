@@ -157,6 +157,59 @@ def classify_many(names):
     return [c or DEFAULT for c in result]
 
 
+EXPENSES_PROMPT = (
+    "Извлеки из сообщения пользователя список трат. Верни ТОЛЬКО JSON-массив вида "
+    '[{"name": "короткое название", "amount": число в рублях, "date": "ГГГГ-ММ-ДД"}]. '
+    "Сегодня {today}. «Вчера» — это {yesterday}. Строка с датой относится ко всем тратам ниже неё, пока не встретится другая дата. "
+    "Если дата не указана — {today}. Если трат нет, верни []."
+)
+
+
+def parse_expenses_text(text: str, today):
+    """Запасной разбор свободного текста моделью. -> список {name, amount, date(ISO)} или None."""
+    if not POLZA_API_KEY or not text.strip():
+        return None
+    yesterday = (today - __import__("datetime").timedelta(days=1)).isoformat()
+    answer = _polza([{"role": "system", "content": EXPENSES_PROMPT.format(today=today.isoformat(), yesterday=yesterday)},
+                     {"role": "user", "content": text[:4000]}], max_tokens=1200)
+    data = _extract_json_any(answer or "")
+    if not isinstance(data, list):
+        return None
+    out = []
+    for it in data[:60]:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or "").strip()
+        try:
+            amount = int(round(float(str(it.get("amount", "")).replace(",", ".").replace(" ", ""))))
+        except ValueError:
+            continue
+        if not name or amount <= 0:
+            continue
+        try:
+            date = storage.to_iso(it.get("date") or today)
+        except ValueError:
+            date = today.isoformat()
+        out.append({"name": name[:100], "amount": amount, "date": date})
+    return out
+
+
+def _extract_json_any(text: str):
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-z]*\s*|\s*```$", "", text, flags=re.S)
+    try:
+        return json.loads(text)
+    except ValueError:
+        m = re.search(r"\[.*\]", text, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except ValueError:
+                pass
+    return None
+
+
 def generate_advice(report: str) -> str:
     prompt = f"{report}\n\nДай один короткий и практичный совет по оптимизации расходов (1–2 предложения, по-русски)."
     answer = _polza([{"role": "user", "content": prompt}], max_tokens=120, temperature=0.7)
