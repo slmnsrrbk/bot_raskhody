@@ -82,6 +82,13 @@ def connect():
 def init_db():
     with connect() as con:
         con.executescript(SCHEMA)
+        # Записи, зашифрованные другой схемой (другим ключом), прочитать нельзя — удаляем.
+        pat = crypto.PREFIX + "%"
+        n = con.execute("DELETE FROM expenses WHERE name LIKE 'enc%' AND name NOT LIKE ?", (pat,)).rowcount
+        n += con.execute("DELETE FROM limits WHERE daily LIKE 'enc%' AND daily NOT LIKE ?", (pat,)).rowcount
+        if n:
+            import logging
+            logging.getLogger("storage").warning("Удалено %s записей другой схемы шифрования", n)
     crypto.master_key()  # создаёт .data_key при первом запуске
     _encrypt_legacy_rows()
 

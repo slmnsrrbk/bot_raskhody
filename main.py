@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import functools
 import io
 import logging
 import secrets
@@ -167,6 +168,7 @@ def register(update: Update) -> int:
 
 
 def guarded(handler):
+    @functools.wraps(handler)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             user_id = register(update)
@@ -192,6 +194,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int
         reply_markup=main_keyboard(),
         parse_mode="Markdown",
     )
+
+
+@guarded
+async def handle_qr_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    wait = await update.message.reply_text("🔎 Проверяю чек по QR…")
+    parsed = await in_thread(receipt.resolve, None, receipt.find_qr_text(update.message.text))
+    if not parsed:
+        await wait.edit_text("Не удалось получить данные чека по этому QR.")
+        return
+    await _finish_receipt(update, context, user_id, parsed, wait)
 
 
 @guarded
@@ -488,17 +500,8 @@ async def post_shutdown(app: Application):
         scheduler.shutdown(wait=False)
 
 
-def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    if not TELEGRAM_TOKEN:
-        logger.error("TELEGRAM_TOKEN не задан: добавьте строку TELEGRAM_TOKEN=... в файл .env рядом с main.py")
-        sys.exit(1)
-    if not (ai.POLZA_API_KEY or ai.CHAD_API_KEY):
-        logger.warning("POLZA_API_KEY не задан — категории определяются только по словарю, советы отключены.")
-    storage.init_db()
-
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
+def build_app(token: str) -> Application:
+    app = Application.builder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
     T = filters.TEXT & ~filters.COMMAND
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("delete", ask_delete))
@@ -519,7 +522,19 @@ def main():
     app.add_handler(MessageHandler(T, handle_message))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_error_handler(error_handler)
+    return app
 
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    if not TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN не задан: добавьте строку TELEGRAM_TOKEN=... в файл .env рядом с main.py")
+        sys.exit(1)
+    if not (ai.POLZA_API_KEY or ai.CHAD_API_KEY):
+        logger.warning("POLZA_API_KEY не задан — категории определяются только по словарю, советы отключены.")
+    storage.init_db()
+    app = build_app(TELEGRAM_TOKEN)
     logger.info("🤖 Бот запущен.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

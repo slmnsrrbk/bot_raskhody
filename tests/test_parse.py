@@ -93,3 +93,19 @@ class StorageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BotBuildTests(StorageTests):
+    def test_all_handlers_resolve(self):
+        app = main.build_app("123456:TESTTOKEN")
+        names = {h.callback.__name__ for group in app.handlers.values() for h in group}
+        for expected in ("start", "handle_message", "handle_qr_text", "handle_photo", "ask_delete", "ask_export", "on_callback"):
+            self.assertIn(expected, names)
+
+    def test_foreign_scheme_rows_removed(self):
+        import sqlite3
+        raw = sqlite3.connect(storage.DB_FILE)
+        raw.execute("INSERT INTO expenses(user_id,name,amount,category,date,created_at) VALUES(1,'enc2:xx','enc2:yy','enc2:zz','2026-09-01','x')")
+        raw.commit(); raw.close()
+        storage.init_db()
+        self.assertEqual(storage.list_expenses(1), [])
