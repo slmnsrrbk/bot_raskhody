@@ -113,10 +113,14 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .sheet-h button{color:var(--blue);font-size:17px}
 .sheet-h button.primary{font-weight:600}
 .sheet-h button:disabled{color:var(--label3)}
-.amount-field{text-align:center;padding:14px 0 18px}
-.amount-field input{width:100%;text-align:center;border:0;background:transparent;font-size:44px;font-weight:700;letter-spacing:-.03em;outline:none;padding:0}
+.amount-field{text-align:center;padding:10px 0 6px}
+.amount-field input{width:100%;text-align:center;border:0;background:transparent;font-size:48px;font-weight:700;letter-spacing:-.03em;outline:none;padding:0;caret-color:var(--blue)}
 .amount-field input::placeholder{color:var(--label3)}
-.amount-field .cur{font-size:13px;color:var(--label2);font-weight:500}
+.amount-field .cur{font-size:13px;color:var(--label2);font-weight:500;margin-top:-2px}
+.name-field{padding:8px 0 16px}
+.name-field input{width:100%;text-align:center;border:0;background:var(--field);border-radius:14px;font-size:22px;font-weight:500;letter-spacing:-.01em;outline:none;padding:14px 16px;color:var(--label);caret-color:var(--blue)}
+.name-field input::placeholder{color:var(--label3);font-weight:400}
+.name-field input:focus{box-shadow:0 0 0 2px var(--blue) inset}
 .fields{background:var(--field);border-radius:12px;overflow:hidden;margin-bottom:18px}
 .field{display:flex;align-items:center;gap:12px;padding:0 16px;height:46px;position:relative}
 .field + .field::before{content:"";position:absolute;left:16px;right:0;top:0;height:.5px;background:var(--sep)}
@@ -135,7 +139,7 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 
 /* main button fallback (вне Telegram) */
-.mainbtn{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));height:50px;border-radius:12px;background:var(--blue);color:#fff;font-size:17px;font-weight:600;z-index:10;box-shadow:0 8px 20px rgba(0,122,255,.3)}
+.mainbtn{position:fixed;left:16px;right:16px;bottom:calc(14px + env(safe-area-inset-bottom));height:50px;border-radius:12px;background:var(--blue);color:#fff;font-size:17px;font-weight:600;z-index:10;box-shadow:0 8px 20px rgba(0,122,255,.3)}
 .mainbtn[hidden]{display:none}
 </style>
 </head>
@@ -327,21 +331,19 @@ const sheet = document.getElementById("sheet"), backdrop = document.getElementBy
 let sheetOnClose = null;
 function openSheet(html, onOpen){
   sheet.innerHTML = html; sheet.classList.add("show"); backdrop.classList.add("show");
-  if (tg) { tg.MainButton.hide(); tg.BackButton.show(); }
+  document.getElementById("mainbtn").hidden = true;
+  if (tg) tg.BackButton.show();
   onOpen && onOpen();
 }
 function closeSheet(){
   sheet.classList.remove("show"); backdrop.classList.remove("show");
-  if (tg) { tg.BackButton.hide(); showMain(); }
+  if (tg) tg.BackButton.hide();
+  showMain();
   sheetOnClose && sheetOnClose(); sheetOnClose = null;
 }
 backdrop.addEventListener("click", closeSheet);
 if (tg) tg.BackButton.onClick(closeSheet);
-function showMain(){
-  if (tg) { tg.MainButton.setParams({text:"Добавить трату", is_visible:true}); }
-  else document.getElementById("mainbtn").hidden = false;
-}
-if (tg) tg.MainButton.onClick(() => openAdd());
+function showMain(){ document.getElementById("mainbtn").hidden = false; }
 
 function catPicker(selected){
   return `<div class="cats" id="cats">${Object.keys(CAT).map(c => `<button type="button" class="cat ${c===selected?"sel":""}" data-c="${c}"><div class="ico" style="background:${CAT[c].c}">${CAT[c].e}</div>${c}</button>`).join("")}</div>`;
@@ -355,29 +357,39 @@ function formHtml(title, item){
   const today = state.data.today;
   return `<div class="grab"></div>
   <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>${title}</h2><button type="button" class="primary" id="save">Готово</button></div>
-  <div class="amount-field"><input id="amount" inputmode="decimal" placeholder="0" value="${item?item.amount:""}" autocomplete="off"><div class="cur">рублей</div></div>
+  <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${item?item.amount:""}" autocomplete="off" ${item?"":"autofocus"}><div class="cur">рублей</div></div>
+  <div class="name-field"><input id="name" enterkeyhint="done" placeholder="Название: кофе, такси…" value="${item?esc(item.name):""}" autocomplete="off" autocapitalize="sentences"></div>
   <div class="fields">
-    <div class="field"><label>Название</label><input id="name" placeholder="Кофе, такси, продукты…" value="${item?esc(item.name):""}" autocomplete="off"></div>
     <div class="field"><label>Дата</label><input id="date" type="date" value="${item?item.iso:today}" max="${today}"></div>
   </div>
   <div class="hint">${item ? "Категория" : "Категория (если не выбрать, определится автоматически)"}</div>
   ${catPicker(item ? item.category : "")}
   ${item ? `<button type="button" class="danger" id="del">Удалить трату</button>` : ""}`;
 }
+function wireEnter(save){
+  const amount = document.getElementById("amount"), name = document.getElementById("name");
+  amount.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); name.focus(); } });
+  name.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); save(); } });
+}
 function openAdd(){
   openSheet(formHtml("Новая трата", null), () => {
     const getCat = bindCats();
-    const amount = document.getElementById("amount"); setTimeout(()=>amount.focus(), 350);
+    const amount = document.getElementById("amount");
+    amount.focus({preventScroll:true});   // синхронно в обработчике касания — так iOS сразу показывает клавиатуру
+    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat() }, "POST", "/api/expenses", "Добавлено");
+    wireEnter(save);
     document.getElementById("cancel").onclick = closeSheet;
-    document.getElementById("save").onclick = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat() }, "POST", "/api/expenses", "Добавлено");
+    document.getElementById("save").onclick = save;
   });
 }
 function openEdit(id){
   const item = state.data.expenses.find(x=>x.id===id); if (!item) return;
   openSheet(formHtml("Изменить", item), () => {
     const getCat = bindCats();
+    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat() }, "PUT", "/api/expenses/"+id, "Сохранено");
+    wireEnter(save);
     document.getElementById("cancel").onclick = closeSheet;
-    document.getElementById("save").onclick = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat() }, "PUT", "/api/expenses/"+id, "Сохранено");
+    document.getElementById("save").onclick = save;
     document.getElementById("del").onclick = () => confirmDel(id, item);
   });
 }
@@ -390,7 +402,7 @@ async function submit(payload, method, url, msg){
   if (state.busy) return;
   if (!payload.name.trim()) return toast("Введите название"), haptic("err");
   if (!(parseFloat(String(payload.amount).replace(",", ".")) > 0)) return toast("Введите сумму"), haptic("err");
-  try { setBusy(true); await api(url, {method, body: JSON.stringify(payload)}); haptic("ok"); closeSheet(); toast(msg); await load(false); }
+  try { setBusy(true); const saved = await api(url, {method, body: JSON.stringify(payload)}); haptic("ok"); closeSheet(); toast(saved && saved.category && !payload.category ? `${msg} · ${saved.category}` : msg); await load(false); }
   catch(e){ haptic("err"); toast(e.message); } finally { setBusy(false); }
 }
 function openLimits(){
@@ -411,7 +423,7 @@ function openLimits(){
   });
 }
 const val = id => document.getElementById(id).value;
-function setBusy(b){ state.busy = b; const s = document.getElementById("save"); if (s) s.disabled = b; if (tg) b ? tg.MainButton.showProgress() : tg.MainButton.hideProgress(); }
+function setBusy(b){ state.busy = b; const s = document.getElementById("save"); if (s) s.disabled = b; }
 let toastT; function toast(m){ const t = document.getElementById("toast"); t.textContent = m; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(()=>t.classList.remove("show"), 2200); }
 
 /* ---------- Load ---------- */

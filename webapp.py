@@ -14,9 +14,9 @@ from pathlib import Path
 from urllib.parse import parse_qsl
 
 import pytz
-import requests
 from aiohttp import web
 
+import ai
 import storage
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -29,7 +29,6 @@ except ImportError:
 logger = logging.getLogger("webapp")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-CHAD_API_KEY = os.getenv("CHAD_API_KEY", "")
 ALLOWED_USER_IDS = {int(x) for x in re.findall(r"\d+", os.getenv("ALLOWED_USER_IDS", ""))}
 DEV_MODE = os.getenv("WEBAPP_DEV", "") == "1"          # без проверки подписи Telegram (только локально)
 HOST = os.getenv("WEBAPP_HOST", "127.0.0.1")
@@ -39,29 +38,9 @@ TZ = pytz.timezone(os.getenv("TIMEZONE", "Asia/Krasnoyarsk"))
 STATIC_DIR = BASE_DIR / "webapp"
 CATEGORIES = storage.CATEGORIES
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "120"))   # запросов в минуту на пользователя
-CHAD_API_URL = "https://ask.chadgpt.ru/api/public/gpt-4o-mini"
 
 
-# ---------------------------------------------------------------------------
-# Категория через ChadGPT
-# ---------------------------------------------------------------------------
-def detect_category(name: str) -> str:
-    if not CHAD_API_KEY:
-        return "Другое"
-    try:
-        r = requests.post(
-            CHAD_API_URL,
-            json={"message": f"Определи категорию для траты '{name}' одним словом. Только: {', '.join(CATEGORIES)}.",
-                  "api_key": CHAD_API_KEY},
-            timeout=20,
-        )
-        resp = r.json()
-        if r.ok and resp.get("is_success"):
-            word = resp["response"].strip().split()[0].strip(".,!").capitalize()
-            return word if word in CATEGORIES else "Другое"
-    except Exception as e:  # noqa: BLE001
-        logger.warning("ChadGPT: %s", e)
-    return "Другое"
+detect_category = ai.detect_category
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +95,6 @@ async def security_headers(request: web.Request, handler):
     resp = await handler(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "no-referrer"
-    resp.headers["X-Frame-Options"] = "ALLOW-FROM https://web.telegram.org"
     resp.headers["Content-Security-Policy"] = "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"
     resp.headers["Cache-Control"] = "no-store" if request.path.startswith("/api/") else "no-cache"
     return resp

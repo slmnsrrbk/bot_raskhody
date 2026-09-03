@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS category_cache (
+    name      TEXT PRIMARY KEY,
+    category  TEXT NOT NULL
+);
 """
 
 
@@ -232,6 +236,20 @@ def set_limits(user_id: int, **values) -> dict:
             (user_id, cur["daily"], cur["weekly"], cur["monthly"]),
         )
     return cur
+
+
+# ---------------------------------------------------------------------------
+# Кэш «название → категория» (общий для всех пользователей, без личных данных)
+# ---------------------------------------------------------------------------
+def cache_get(name: str):
+    with connect() as con:
+        r = con.execute("SELECT category FROM category_cache WHERE name=?", (name,)).fetchone()
+        return r["category"] if r else None
+
+
+def cache_set(name: str, category: str):
+    with connect() as con:
+        con.execute("INSERT OR REPLACE INTO category_cache(name, category) VALUES(?,?)", (name[:100], category))
 
 
 # ---------------------------------------------------------------------------

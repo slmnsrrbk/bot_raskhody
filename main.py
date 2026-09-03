@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import pytz
-import requests
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from telegram import (
@@ -28,6 +27,7 @@ from telegram.ext import (
     filters,
 )
 
+import ai
 import storage
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -38,14 +38,12 @@ logger = logging.getLogger("bot_raskhody")
 # Конфигурация (секреты только в .env)
 # ---------------------------------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-CHAD_API_KEY = os.getenv("CHAD_API_KEY", "")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 OWNER_ID = int(os.getenv("OWNER_ID") or 0)          # кому отдать старые записи из expenses.json
 ALLOWED_USER_IDS = {int(x) for x in re.findall(r"\d+", os.getenv("ALLOWED_USER_IDS", ""))}  # пусто = бот открыт всем
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Krasnoyarsk")
 DAILY_REPORT_TIME = os.getenv("DAILY_REPORT_TIME", "21:00")
 TZ = pytz.timezone(TIMEZONE)
-CHAD_API_URL = "https://ask.chadgpt.ru/api/public/gpt-4o-mini"
 
 CATEGORIES = storage.CATEGORIES
 BTN_TODAY, BTN_WEEK, BTN_MONTH = "Расходы за сегодня", "За 7 дней", "За 30 дней"
@@ -62,33 +60,8 @@ def fmt(n) -> str:
     return f"{int(n):,}".replace(",", " ") + " ₽"
 
 
-# ---------------------------------------------------------------------------
-# ChadGPT
-# ---------------------------------------------------------------------------
-def _ask_chad(message: str):
-    if not CHAD_API_KEY:
-        return None
-    try:
-        r = requests.post(CHAD_API_URL, json={"message": message, "api_key": CHAD_API_KEY}, timeout=20)
-        resp = r.json()
-        if r.ok and resp.get("is_success"):
-            return resp.get("response", "")
-    except Exception as e:  # noqa: BLE001
-        logger.warning("ChadGPT: %s", e)
-    return None
-
-
-def detect_category(name: str) -> str:
-    answer = _ask_chad(f"Определи категорию для траты '{name}' одним словом. Только: {', '.join(CATEGORIES)}.")
-    if answer and answer.strip():
-        word = answer.strip().split()[0].strip(".,!").capitalize()
-        if word in CATEGORIES:
-            return word
-    return "Другое"
-
-
-def generate_advice(text: str) -> str:
-    return _ask_chad(f"{text}\nДай один короткий и практичный совет по оптимизации расходов.") or ""
+detect_category = ai.detect_category
+generate_advice = ai.generate_advice
 
 
 async def in_thread(func, *args):
@@ -421,8 +394,8 @@ def main():
     if not TELEGRAM_TOKEN:
         logger.error("TELEGRAM_TOKEN не задан: добавьте строку TELEGRAM_TOKEN=... в файл .env рядом с main.py")
         sys.exit(1)
-    if not CHAD_API_KEY:
-        logger.warning("CHAD_API_KEY не задан — категории будут «Другое», советы отключены.")
+    if not (ai.POLZA_API_KEY or ai.CHAD_API_KEY):
+        logger.warning("POLZA_API_KEY не задан — категории определяются только по словарю, советы отключены.")
     storage.init_db()
 
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
