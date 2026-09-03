@@ -33,6 +33,6 @@ except Exception as e:  # noqa: BLE001
 t = time.time()
 try:
     cat = ai._pick_category(ai._polza([{"role": "system", "content": ai.SYSTEM_PROMPT}, {"role": "user", "content": "Яндекс Драйв"}]) or "")
-    show("Категория через AI («Яндекс Драйв»)", cat == "Транспорт", f"-> {cat} за {time.time() - t:.1f} с")
+    show("Категория через AI («Яндекс Драйв»)", cat in ("Транспорт", "Машина"), f"-> {cat} за {time.time() - t:.1f} с")
 except Exception as e:  # noqa: BLE001
     show("Категория через AI", False, f"{type(e).__name__}: {e}")

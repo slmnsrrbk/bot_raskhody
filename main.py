@@ -197,24 +197,132 @@ async def handle_qr_text(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     await _finish_receipt(update, context, user_id, parsed, wait)
 
 
-@guarded
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    parsed = parse_expense(update.message.text)
-    if not parsed:
-        await update.message.reply_text("⚠️ Не понял. Пример: `вчера хлеб 200`", parse_mode="Markdown")
-        return
-    name, amount, date = parsed
-    category = await in_thread(detect_category, name)
-    item = storage.add_expense(user_id, name, amount, category, date)
+def _items_text(items, header: str) -> str:
+    lines, last_date = [], None
+    for a in items:
+        if a["date"] != last_date:
+            lines.append(f"\n📅 {a['date']}")
+            last_date = a["date"]
+        lines.append(f"• {a['name']} — {fmt(a['amount'])} ({a['category']})")
+    return header + "\n".join(lines)
 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Отменить", callback_data=f"del:{item['id']}")]])
-    await update.message.reply_text(
-        f"✅ {item['name']} — {fmt(item['amount'])} ({item['category']}) — {item['date']} добавлено.",
-        reply_markup=kb,
-    )
+
+def _remember_batch(context, ids) -> str:
+    token = secrets.token_hex(4)
+    if context is not None:
+        context.user_data.setdefault("receipts", {})[token] = list(ids)
+    return token
+
+
+def _batch_items(context, user_id: int, token: str):
+    ids = (context.user_data.get("receipts", {}) if context is not None else {}).get(token, [])
+    return [it for it in (storage.get_expense(user_id, i) for i in ids) if it]
+
+
+def _single_kb(item_id: int):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Отменить", callback_data=f"del:{item_id}"),
+                                  InlineKeyboardButton("✏️ Категория", callback_data=f"cat:{item_id}:-")]])
+
+
+def _batch_kb(token: str):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Отменить всё", callback_data=f"rc:{token}"),
+                                  InlineKeyboardButton("✏️ Категории", callback_data=f"cats:{token}")]])
+
+
+def _single_text(item) -> str:
+    return f"✅ {item['name']} — {fmt(item['amount'])} ({item['category']}) — {item['date']} добавлено."
+
+
+def _batch_text(items) -> str:
+    total = sum(a["amount"] for a in items)
+    return _items_text(items, f"✅ Добавлено {len(items)} {plural(len(items), 'трата', 'траты', 'трат')} на {fmt(total)}:")
+
+
+async def process_expense(bot, user_id: int, text: str, context=None):
+    items = await in_thread(parse_expenses, text)
+    if not items:
+        await bot.send_message(user_id, "⚠️ Не понял. Примеры: `такси 350`, `вчера хлеб 200`, или список строк с датами.",
+                               parse_mode="Markdown")
+        return
+    # Быстрая категория (словарь/кэш) — сразу; остальное уточнит модель в фоне
+    quick = [ai.by_keywords(it["name"]) or storage.cache_get(ai.normalize(it["name"])) for it in items]
+    added = storage.add_expenses_bulk(user_id, [dict(it, category=c or "Другое") for it, c in zip(items, quick)])
+    if len(added) == 1:
+        msg = await bot.send_message(user_id, _single_text(added[0]), reply_markup=_single_kb(added[0]["id"]))
+        token = None
+    else:
+        token = _remember_batch(context, [a["id"] for a in added])
+        msg = await bot.send_message(user_id, _batch_text(added), reply_markup=_batch_kb(token))
     status = limit_status(user_id)
     if status:
-        await update.message.reply_text("📊 " + status)
+        await bot.send_message(user_id, "📊 " + status)
+    pending = [a for a, c in zip(added, quick) if c is None]
+    if pending and (ai.POLZA_API_KEY or ai.CHAD_API_KEY):
+        asyncio.create_task(_refine_categories(user_id, msg, pending, token, context))
+
+
+async def _refine_categories(user_id: int, msg, pending, token, context):
+    """Фоновое уточнение категорий моделью и обновление сообщения бота."""
+    try:
+        cats = await in_thread(ai.classify_many, [a["name"] for a in pending])
+        changed = False
+        for a, c in zip(pending, cats):
+            if c and c != a["category"]:
+                storage.update_expense(user_id, a["id"], category=c)
+                changed = True
+        if not changed:
+            return
+        if token is None:
+            item = storage.get_expense(user_id, pending[0]["id"])
+            if item:
+                await msg.edit_text(_single_text(item), reply_markup=_single_kb(item["id"]))
+        else:
+            items = _batch_items(context, user_id, token)
+            if items:
+                await msg.edit_text(_batch_text(items), reply_markup=_batch_kb(token))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Уточнение категорий: %s", e)
+
+
+def _category_kb(item_id: int, token: str):
+    rows, row = [], []
+    for i, c in enumerate(CATEGORIES):
+        row.append(InlineKeyboardButton(c, callback_data=f"setcat:{item_id}:{i}:{token}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("🔙 Назад", callback_data=f"back:{item_id}:{token}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _items_kb(context, user_id: int, token: str):
+    items = _batch_items(context, user_id, token)
+    rows = [[InlineKeyboardButton(f"{it['name']} · {it['category']}", callback_data=f"cat:{it['id']}:{token}")] for it in items[:30]]
+    rows.append([InlineKeyboardButton("🔙 Назад", callback_data=f"back:0:{token}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _show_after_edit(q, context, user_id: int, item_id: int, token: str):
+    """Вернуть сообщение к обычному виду после смены категории."""
+    if token == "-":
+        item = storage.get_expense(user_id, item_id)
+        if item:
+            await q.edit_message_text(_single_text(item), reply_markup=_single_kb(item_id))
+        else:
+            await q.edit_message_text("Эта запись уже удалена.")
+    else:
+        items = _batch_items(context, user_id, token)
+        if items:
+            await q.edit_message_text(_batch_text(items), reply_markup=_batch_kb(token))
+        else:
+            await q.edit_message_text("Записи уже удалены.")
+
+
+@guarded
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    await process_expense(context.bot, user_id, update.message.text, context)
 
 
 @guarded
@@ -418,6 +526,30 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("Возвращено")
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Отменить", callback_data=f"del:{new['id']}")]])
         await q.edit_message_text(f"✅ Возвращено: {_item_label(new)}", reply_markup=kb)
+    elif data.startswith("cats:"):
+        await q.answer()
+        await q.edit_message_reply_markup(_items_kb(context, user_id, data[5:]))
+    elif data.startswith("cat:"):
+        await q.answer()
+        _, item_id, token = data.split(":")
+        item = storage.get_expense(user_id, int(item_id))
+        if not item:
+            await q.edit_message_text("Эта запись уже удалена.")
+            return
+        await q.edit_message_text(f"Категория для «{item['name']}» — {fmt(item['amount'])}. Сейчас: {item['category']}. Выберите:",
+                                  reply_markup=_category_kb(int(item_id), token))
+    elif data.startswith("setcat:"):
+        _, item_id, idx, token = data.split(":")
+        cat = CATEGORIES[int(idx)]
+        item = storage.update_expense(user_id, int(item_id), category=cat)
+        if item:
+            storage.cache_set(ai.normalize(item["name"]), cat)   # запоминаем выбор для будущих трат
+        await q.answer(f"Категория: {cat}")
+        await _show_after_edit(q, context, user_id, int(item_id), token)
+    elif data.startswith("back:"):
+        _, item_id, token = data.split(":")
+        await q.answer()
+        await _show_after_edit(q, context, user_id, int(item_id), token)
     elif data.startswith("rc:"):
         ids = context.user_data.get("receipts", {}).pop(data[3:], None)
         if not ids:

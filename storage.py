@@ -21,7 +21,8 @@ DB_FILE = Path(os.getenv("DB_FILE", str(BASE_DIR / "data.db")))
 LEGACY_EXPENSES = BASE_DIR / "expenses.json"
 LEGACY_LIMITS = BASE_DIR / "limits.json"
 
-CATEGORIES = ["Еда", "Транспорт", "Одежда", "Развлечения", "Другое"]
+CATEGORIES = ["Еда", "Продукты", "Транспорт", "Машина", "Жильё", "Телефон", "Здоровье", "Одежда",
+              "Развлечения", "Работа", "Благотворительность", "Непредвиденные", "Другое"]
 DATE_FMT = "%d.%m.%Y"  # формат для показа в боте; в базе — ISO ГГГГ-ММ-ДД
 
 _lock = threading.Lock()

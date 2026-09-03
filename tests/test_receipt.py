@@ -46,7 +46,7 @@ class ReceiptQrTests(unittest.TestCase):
         self.assertEqual(r["source"], "qr")
         self.assertEqual(r["store"], 'ООО "Лента"')
         self.assertEqual([(i["name"], i["amount"], i["category"]) for i in r["items"]],
-                         [("МОЛОКО 2,5% 930МЛ", 80, "Еда"), ("ТАКСИ ЯНДЕКС", 438, "Транспорт")])
+                         [("МОЛОКО 2,5% 930МЛ", 80, "Продукты"), ("ТАКСИ ЯНДЕКС", 438, "Транспорт")])
 
     def test_service_error_falls_back_to_ai_then_sum(self):
         resp = mock.Mock(); resp.json.return_value = {"code": 0, "data": "чек не найден"}
@@ -59,10 +59,10 @@ class ReceiptQrTests(unittest.TestCase):
 
     def test_classify_many_batches(self):
         with mock.patch.object(ai, "POLZA_API_KEY", "k"), mock.patch.object(ai, "_polza", return_value="1. Другое\n2. Одежда") as m:
-            cats = ai.classify_many(["Кофе латте", "Аптека", "Кроссовки Nike", "Штука"])
+            cats = ai.classify_many(["Кофе латте", "Фигня", "Кроссовки Nike", "Штука"])
         self.assertEqual(cats, ["Еда", "Другое", "Одежда", "Одежда"])
         self.assertEqual(m.call_count, 1)
-        self.assertEqual(storage.cache_get("аптека"), "Другое")
+        self.assertEqual(storage.cache_get("фигня"), "Другое")
 
 
 if __name__ == "__main__":

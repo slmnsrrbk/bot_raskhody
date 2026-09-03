@@ -21,6 +21,7 @@ CURRENCY = r"(?:₽|руб(?:лей|ля|\.)?|р\.?|rub)?"
 NUM = r"\d{1,3}(?:[ \u00a0]\d{3})+|\d+"
 AMOUNT_END = re.compile(rf"^(?P<name>.*?)[\s:\-–—]*(?P<amt>(?:{NUM})(?:[.,]\d{{1,2}})?)\s*{CURRENCY}\s*$", re.I)
 AMOUNT_START = re.compile(rf"^(?P<amt>(?:{NUM})(?:[.,]\d{{1,2}})?)\s*{CURRENCY}\s*[\-–—:]?\s*(?P<name>.+?)\s*$", re.I)
+AMOUNT_MID = re.compile(rf"^(?P<a>[^\d]+?)\s+(?P<amt>(?:{NUM})(?:[.,]\d{{1,2}})?)\s*{CURRENCY}\s+(?P<b>[^\d]+?)\s*$", re.I)
 ONLY_AMOUNT = re.compile(rf"^(?P<amt>(?:{NUM})(?:[.,]\d{{1,2}})?)\s*{CURRENCY}\s*$", re.I)
 DATE_NUMERIC = re.compile(r"^(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?$")
 DATE_TEXT = re.compile(r"^(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?$", re.I)
@@ -97,6 +98,12 @@ def parse_line(line: str):
         amt = _amount(m.group("amt"))
         if amt:
             return _clean_name(m.group("name")), amt
+    m = AMOUNT_MID.match(line)          # «Мясо 7500 продукты» — сумма посередине
+    if m:
+        amt = _amount(m.group("amt"))
+        name = _clean_name(m.group("a") + " " + m.group("b"))
+        if amt and name:
+            return name, amt
     return None
 
 

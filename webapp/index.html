@@ -182,8 +182,8 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .field input{flex:1;border:0;background:transparent;outline:none;font-size:17px;min-width:0;text-align:right;color:var(--label)}
 .field input[type=date]{-webkit-appearance:none;appearance:none}
 .field input::placeholder{color:var(--label3)}
-.cats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:18px}
-.cat{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 4px 8px;border-radius:12px;background:var(--field);font-size:11px;font-weight:500;color:var(--label2);border:2px solid transparent;transition:border-color .15s,transform .15s}
+.cats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:18px}
+.cat{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 2px 8px;border-radius:12px;background:var(--field);font-size:10.5px;font-weight:500;color:var(--label2);border:2px solid transparent;transition:border-color .15s,transform .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .cat .ico{width:34px;height:34px;font-size:18px}
 .cat.sel{border-color:var(--blue);color:var(--label)}
 .cat:active{transform:scale(.95)}
@@ -235,11 +235,19 @@ button{background:none;border:0;padding:0;cursor:pointer}
 (() => {
 const tg = window.Telegram && window.Telegram.WebApp;
 const CAT = {
-  "Еда":         {e:"🍽️", c:"var(--orange)", hex:"#FF9500"},
-  "Транспорт":   {e:"🚕", c:"var(--blue)",   hex:"#007AFF"},
-  "Одежда":      {e:"👕", c:"var(--purple)", hex:"#AF52DE"},
-  "Развлечения": {e:"🎉", c:"var(--pink)",   hex:"#FF2D55"},
-  "Другое":      {e:"🧾", c:"var(--gray)",   hex:"#8E8E93"},
+  "Еда":                 {e:"🍽️", c:"#FF9500", hex:"#FF9500"},
+  "Продукты":            {e:"🛒", c:"#34C759", hex:"#34C759"},
+  "Транспорт":           {e:"🚕", c:"#007AFF", hex:"#007AFF"},
+  "Машина":              {e:"🚗", c:"#5AC8FA", hex:"#5AC8FA"},
+  "Жильё":               {e:"🏠", c:"#5856D6", hex:"#5856D6"},
+  "Телефон":             {e:"📱", c:"#32ADE6", hex:"#32ADE6"},
+  "Здоровье":            {e:"💊", c:"#FF3B30", hex:"#FF3B30"},
+  "Одежда":              {e:"👕", c:"#AF52DE", hex:"#AF52DE"},
+  "Развлечения":         {e:"🎉", c:"#FF2D55", hex:"#FF2D55"},
+  "Работа":              {e:"💼", c:"#A2845E", hex:"#A2845E"},
+  "Благотворительность": {e:"🤝", c:"#00C7BE", hex:"#00C7BE"},
+  "Непредвиденные":      {e:"⚡", c:"#FFCC00", hex:"#FFCC00"},
+  "Другое":              {e:"🧾", c:"#8E8E93", hex:"#8E8E93"},
 };
 const catOf = c => CAT[c] || CAT["Другое"];
 const NBSP = " ";
@@ -521,9 +529,8 @@ function formHtml(title, item){
   <div class="fields">
     <div class="field"><label>Дата</label><input id="date" type="date" value="${item?item.iso:today}" max="${today}"></div>
   </div>
-  <div class="hint">${item ? "Категория" : "Категория (если не выбрать, определится автоматически)"}</div>
-  ${catPicker(item ? item.category : "")}
-  ${item ? `<button type="button" class="danger" id="del">Удалить трату</button>` : ""}`;
+  ${item ? `<div class="hint">Категория</div>${catPicker(item.category)}<button type="button" class="danger" id="del">Удалить трату</button>`
+         : `<div class="hint">Категория определится автоматически. Изменить можно позже: нажмите на трату или свайпните её вправо.</div>`}`;
 }
 function wireEnter(save){
   const amount = document.getElementById("amount"), name = document.getElementById("name");
@@ -532,10 +539,9 @@ function wireEnter(save){
 }
 function openAdd(){
   openSheet(formHtml("Новая трата", null), () => {
-    const getCat = bindCats();
     const amount = document.getElementById("amount");
     amount.focus({preventScroll:true});   // синхронно в обработчике касания — так iOS сразу показывает клавиатуру
-    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat() }, "POST", "/api/expenses", "Добавлено");
+    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: "" }, "POST", "/api/expenses", "Добавлено");
     wireEnter(save);
     document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("save").onclick = save;

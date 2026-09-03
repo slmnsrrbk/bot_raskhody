@@ -28,6 +28,11 @@ class FreeTextTests(unittest.TestCase):
         self.assertEqual(items, [])
         self.assertEqual(unparsed, ["31.02 кофе 150", "кофе 0"])
 
+    def test_amount_in_the_middle(self):
+        items, unparsed = parsing.parse_free_text("01.09.2026\nМясо 7500 продукты\nМясо продукты 7500", T)
+        self.assertEqual(unparsed, [])
+        self.assertEqual([(i["name"], i["amount"], i["date"].day) for i in items], [("Мясо продукты", 7500, 1), ("Мясо продукты", 7500, 1)])
+
     def test_decimal_in_name(self):
         items, _ = parsing.parse_free_text("Молоко 2,5% 930мл 80", T)
         self.assertEqual((items[0]["name"], items[0]["amount"]), ("Молоко 2,5% 930мл", 80))

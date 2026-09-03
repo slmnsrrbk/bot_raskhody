@@ -24,12 +24,14 @@ class AiTests(unittest.TestCase):
         self.assertEqual(ai.by_keywords("такси домой"), "Транспорт")
         self.assertEqual(ai.by_keywords("Кроссовки Nike"), "Одежда")
         self.assertEqual(ai.by_keywords("Билет в кино"), "Развлечения")
-        self.assertIsNone(ai.by_keywords("Аптека"))
+        self.assertEqual(ai.by_keywords("Аптека"), "Здоровье")
+        self.assertEqual(ai.by_keywords("Мясо продукты"), "Продукты")
+        self.assertIsNone(ai.by_keywords("Штука-дрюка"))
 
     def test_llm_then_cache(self):
         with mock.patch.object(ai, "POLZA_API_KEY", "k"), mock.patch.object(ai, "_polza_chat", return_value="Другое.") as m:
-            self.assertEqual(ai.detect_category("Аптека"), "Другое")
-            self.assertEqual(ai.detect_category("аптека "), "Другое")  # второй раз из кэша
+            self.assertEqual(ai.detect_category("Штука-дрюка"), "Другое")
+            self.assertEqual(ai.detect_category("штука-дрюка "), "Другое")  # второй раз из кэша
             self.assertEqual(m.call_count, 1)
 
     def test_fallback_model_and_default(self):
@@ -40,7 +42,7 @@ class AiTests(unittest.TestCase):
                 raise RuntimeError("down")
             return "Транспорт"
         with mock.patch.object(ai, "POLZA_API_KEY", "k"), mock.patch.object(ai, "_polza_chat", side_effect=fake):
-            self.assertEqual(ai.detect_category("Яндекс.Драйв"), "Транспорт")
+            self.assertEqual(ai.detect_category("Яндекс.Штука"), "Транспорт")
         self.assertEqual(calls, [ai.POLZA_MODEL, ai.POLZA_FALLBACK_MODEL])
         with mock.patch.object(ai, "POLZA_API_KEY", ""), mock.patch.object(ai, "CHAD_API_KEY", ""):
             self.assertEqual(ai.detect_category("Нечто"), "Другое")

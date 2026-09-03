@@ -109,3 +109,32 @@ class BotBuildTests(StorageTests):
         raw.commit(); raw.close()
         storage.init_db()
         self.assertEqual(storage.list_expenses(1), [])
+
+
+class ProcessExpenseTests(StorageTests):
+    def test_multi_line_message_adds_all(self):
+        import asyncio
+        from unittest import mock
+        sent = []
+
+        class FakeMsg:
+            async def edit_text(self, text, reply_markup=None):
+                sent.append(("edit", text))
+
+        class FakeBot:
+            async def send_message(self, chat_id, text, **kw):
+                sent.append(("send", text))
+                return FakeMsg()
+
+        class Ctx:
+            user_data = {}
+
+        text = "Вчера\n\nБургер 2800\nМойка 700\n\n01.09.2026\n\nМясо 7500 продукты\nПодстричься 1300₽"
+        with mock.patch.object(main.ai, "POLZA_API_KEY", ""), mock.patch.object(main.ai, "CHAD_API_KEY", ""):
+            asyncio.run(main.process_expense(FakeBot(), 1, text, Ctx()))
+        items = storage.list_expenses(1)
+        self.assertEqual(len(items), 4)
+        self.assertEqual({i["category"] for i in items if i["name"] == "Мойка"}, {"Машина"})
+        self.assertIn("Добавлено 4 траты", sent[0][1])
+        self.assertIn("01.09.2026", sent[0][1])
+        self.assertEqual(len(Ctx.user_data["receipts"]), 1)
