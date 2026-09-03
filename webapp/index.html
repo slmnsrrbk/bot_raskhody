@@ -95,7 +95,7 @@ button{background:none;border:0;padding:0;cursor:pointer}
 @keyframes sp{to{transform:rotate(360deg)}}
 
 /* ---- Segmented control ---- */
-.seg{margin:10px 16px 14px;background:var(--tab-bg);border-radius:9px;padding:2px;display:grid;grid-template-columns:repeat(4,1fr);position:relative}
+.seg{margin:4px 0 14px;background:var(--tab-bg);border-radius:9px;padding:2px;display:grid;grid-template-columns:repeat(4,1fr);position:relative}
 .seg button{position:relative;z-index:1;height:32px;border-radius:7px;font-size:13px;font-weight:600;color:var(--label);transition:color .2s}
 .seg .thumb{position:absolute;top:2px;left:2px;height:32px;width:calc(25% - 1px);background:var(--tab-active);border-radius:7px;
   box-shadow:0 3px 8px rgba(0,0,0,.12),0 3px 1px rgba(0,0,0,.04);transition:transform .25s cubic-bezier(.2,.8,.2,1)}
@@ -146,7 +146,9 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .bar{height:4px;border-radius:2px;background:var(--fill);margin-top:6px;overflow:hidden}
 .bar i{display:block;height:100%;border-radius:2px;background:var(--cat,var(--blue));transform-origin:left;transition:width .7s cubic-bezier(.2,.8,.2,1)}
 .row.active{background:var(--fill)}
-.date-h{font-size:13px;color:var(--label2);padding:0 16px 6px}
+.date-h{font-size:17px;font-weight:700;color:var(--label);padding:8px 16px 8px 4px;display:flex;justify-content:space-between;align-items:baseline;letter-spacing:-.01em}
+.date-h .num{font-size:15px;font-weight:500;color:var(--label2)}
+.hero .tap{font-size:12px;color:var(--label2);margin-top:6px}
 .group{margin-bottom:14px}
 
 /* limits */
@@ -228,11 +230,6 @@ button{background:none;border:0;padding:0;cursor:pointer}
   <input type="file" id="file" accept="image/*" capture="environment" hidden>
 </header>
 
-<div class="seg" id="seg">
-  <div class="thumb" id="thumb"></div>
-  <button data-p="day">Сегодня</button><button data-p="week">Неделя</button><button data-p="month">Месяц</button><button data-p="custom" id="segCustom">Период</button>
-</div>
-
 <main id="app">
   <section class="section"><div class="card"><div class="skel"></div></div></section>
   <section class="section"><div class="card"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div></section>
@@ -268,10 +265,7 @@ const allCats = () => (state.data && state.data.categories) || Object.keys(CAT);
 const NBSP = " ";
 const fmt = n => Math.round(n).toLocaleString("ru-RU").replace(/\s/g, NBSP) + NBSP + "₽";
 const MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
-const state = { period: localStorage.getItem("period") || "day", range: null, filter: null, data: null, busy:false };
-try { const r = JSON.parse(localStorage.getItem("range") || "null"); if (r && r.from && r.to) state.range = r; } catch(e){}
-if (state.period === "all") state.period = "custom", state.range = null;
-if (state.period === "custom" && !state.range) state.period = "day";
+const state = { period: "day", range: null, filter: null, data: null, busy:false };
 
 /* ---------- Theme ---------- */
 function applyTheme(){
@@ -332,6 +326,10 @@ function rangeLabel(from, to){
 }
 
 /* ---------- Render ---------- */
+function periodLabel(R, t){
+  if (state.period === "custom") return R ? rangeLabel(R.from, R.to) : "за всё время";
+  return { day: "сегодня, " + t.getDate() + " " + MONTHS[t.getMonth()], week: "последние 7 дней", month: "последние 30 дней" }[state.period];
+}
 function render(){
   const d = state.data; if (!d) return;
   const R = currentRange(d.today);
@@ -339,20 +337,14 @@ function render(){
   const prev = R ? d.expenses.filter(x => inRange(x, R.prevFrom, R.prevTo)) : [];
   const total = cur.reduce((s,x)=>s+x.amount,0);
   const prevTotal = prev.reduce((s,x)=>s+x.amount,0);
-
   const byCat = {};
   cur.forEach(x => { byCat[x.category] = (byCat[x.category]||0) + x.amount; });
   const cats = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
-
   const t = isoToDate(d.today);
-  document.getElementById("subtitle").textContent =
-    state.period === "custom" ? (R ? rangeLabel(R.from, R.to) : "за всё время")
-    : { day: t.getDate()+" "+MONTHS[t.getMonth()], week:"последние 7 дней", month:"последние 30 дней" }[state.period];
-  document.getElementById("segCustom").textContent = state.period === "custom" ? (R ? rangeLabel(R.from, R.to) : "Всё время") : "Период";
+  document.getElementById("subtitle").textContent = periodLabel(R, t);
 
   let html = "";
-
-  /* hero */
+  /* карточка выбранного периода (по умолчанию — сегодня) */
   let delta = "";
   if (R && prevTotal > 0) {
     const p = Math.round((total - prevTotal) / prevTotal * 100);
@@ -360,13 +352,14 @@ function render(){
     delta = `<div class="delta ${down?"down":"up"}"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${down?'<path d="M6 2v8M2 6l4 4 4-4"/>':'<path d="M6 10V2M2 6l4-4 4 4"/>'}</svg>${Math.abs(p)}% к прошлому периоду</div>`;
   }
   const r = 40, C = 2*Math.PI*r; let off = 0;
-  const segs = total ? cats.map(([c,a]) => { const len = a/total*C; const s = `<circle cx="52" cy="52" r="${r}" stroke="${catOf(c).hex}" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"/>`; off += len; return s; }).join("") : `<circle cx="52" cy="52" r="${r}" stroke="var(--fill2)" stroke-dasharray="${C} 0"/>`;
-  html += `<section class="section"><div class="card hero">
-    <div><div class="lbl">Потрачено</div><div class="total num">${fmt(total)}</div>${delta}</div>
-    <button type="button" class="donut" data-act="chart" aria-label="По категориям"><svg viewBox="0 0 104 104">${segs}</svg><div class="c"><b class="num">${cur.length}</b>${plural(cur.length,"трата","траты","трат")}</div></button>
-  </div></section>`;
+  const segs = total ? cats.map(([c,a]) => { const len = a/total*C; const el = `<circle cx="52" cy="52" r="${r}" stroke="${catOf(c).hex}" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"/>`; off += len; return el; }).join("") : `<circle cx="52" cy="52" r="${r}" stroke="var(--fill2)" stroke-dasharray="${C} 0"/>`;
+  const heroTitle = state.period === "day" ? "Потрачено сегодня" : "Потрачено · " + periodLabel(R, t);
+  html += `<section class="section"><button type="button" class="card hero" data-act="chart" style="width:100%;text-align:left">
+    <div><div class="lbl">${heroTitle}</div><div class="total num">${fmt(total)}</div>${delta}<div class="tap">${cats.length ? cats.length + " " + plural(cats.length,"категория","категории","категорий") + " · нажмите для деталей" : "нажмите, чтобы выбрать период"}</div></div>
+    <div class="donut"><svg viewBox="0 0 104 104">${segs}</svg><div class="c"><b class="num">${cur.length}</b>${plural(cur.length,"трата","траты","трат")}</div></div>
+  </button></section>`;
 
-  /* limits */
+  /* лимиты */
   const L = d.limits || {};
   const spent = { daily: sum(d.expenses.filter(x=>inWindow(x,d.today,1))), weekly: sum(d.expenses.filter(x=>inWindow(x,d.today,7))), monthly: sum(d.expenses.filter(x=>inWindow(x,d.today,30))) };
   const names = { daily:"День", weekly:"Неделя", monthly:"Месяц" };
@@ -380,23 +373,12 @@ function render(){
   html += `<section class="section"><div class="section-h"><span>Лимиты</span><button data-act="limits">Изменить</button></div>
     <div class="card">${limRows || `<button class="row" data-act="limits"><div class="ico" style="background:var(--green)">🎯</div><div class="main"><div class="name">Установить лимит</div><div class="sub">Бот предупредит, если выйдете за рамки</div></div><svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg></button>`}</div></section>`;
 
-  /* categories */
-  const catRows = cats.map(([c,a]) => {
-    const m = catOf(c), pct = a/total*100, active = state.filter === c;
-    return `<button class="row ${active?"active":""}" data-cat="${esc(c)}" style="--cat:${m.hex}">
-      <div class="ico" style="background:${m.c}">${m.e}</div>
-      <div class="main"><div class="name">${esc(c)}</div><div class="bar"><i style="width:${pct}%"></i></div></div>
-      <div><div class="amt num">${fmt(a)}</div><div class="sub right num">${pct.toFixed(0)}%</div></div>
-      <svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg></button>`;
-  }).join("");
-  html += `<section class="section"><div class="section-h"><span>По категориям</span>${state.filter?`<button data-act="clear">Сбросить</button>`:""}</div>
-    <div class="card">${catRows || `<div class="empty"><div class="big">🧾</div>Нет трат за этот период</div>`}</div></section>`;
-
-  /* transactions */
-  const list = state.filter ? cur.filter(x=>x.category===state.filter) : cur;
+  /* лента: все дни, новые сверху; фильтр по категории — на всю ленту */
+  const list = (state.filter ? d.expenses.filter(x=>x.category===state.filter) : d.expenses).filter(x => !!x.iso);
   const groups = {}; list.forEach(x => (groups[x.iso] ||= []).push(x));
   const keys = Object.keys(groups).sort().reverse();
-  const txHtml = keys.map(k => `<div class="group"><div class="date-h">${dateLabel(k, d.today)} · <span class="num">${fmt(sum(groups[k]))}</span></div><div class="card">${
+  const shown = keys.slice(0, state.days || 45);
+  const txHtml = shown.map(k => `<div class="group"><div class="date-h"><span>${dateLabel(k, d.today)}</span><span class="num">−${fmt(sum(groups[k]))}</span></div><div class="card">${
     groups[k].map(x => { const m = catOf(x.category); return `<div class="sw" data-sw="${x.id}">
       <div class="sw-side sw-left"><button type="button" class="sw-btn edit" data-edit="${x.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>Изменить</button></div>
       <div class="sw-side sw-right"><button type="button" class="sw-btn del" data-del="${x.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>Удалить</button></div>
@@ -404,28 +386,25 @@ function render(){
       <div class="ico" style="background:${m.c}">${m.e}</div>
       <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}</div></div>
       <div class="amt num">−${fmt(x.amount)}</div></button></div></div>`; }).join("")}</div></div>`).join("");
-  html += `<section class="section"><div class="section-h"><span>${state.filter ? esc(state.filter) : "Операции"}</span><button data-act="export">Выгрузить</button></div>
-    ${txHtml || `<div class="card"><div class="empty"><div class="big">💤</div>Пока пусто. Нажмите «+», чтобы добавить первую трату, или напишите боту: <b>такси 350</b></div></div>`}</section>`;
-
+  const more = keys.length > shown.length ? `<div style="text-align:center;padding:4px 0 10px"><button type="button" class="linkbtn" data-act="more">Показать ещё ${keys.length - shown.length} ${plural(keys.length - shown.length,"день","дня","дней")}</button></div>` : "";
+  html += `<section class="section"><div class="section-h"><span>${state.filter ? esc(state.filter) : "Операции"}</span><span>${state.filter ? `<button data-act="clear">Сбросить</button> · ` : ""}<button data-act="export">Выгрузить</button></span></div>
+    ${txHtml || `<div class="card"><div class="empty"><div class="big">💤</div>Пока пусто. Нажмите «+», чтобы добавить первую трату, или напишите боту: <b>такси 350</b></div></div>`}${more}</section>`;
+  html += `<div class="footer"><button data-act="lock" hidden></button></div>`;
   document.getElementById("app").innerHTML = html;
 }
 const sum = arr => arr.reduce((s,x)=>s+x.amount,0);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const plural = (n,a,b,c) => { n=Math.abs(n)%100; const m=n%10; return n>10&&n<20?c:m>1&&m<5?b:m===1?a:c; };
 
-/* ---------- Segmented ---------- */
-const seg = document.getElementById("seg");
-function setPeriod(p, animate=true){
-  state.period = p; localStorage.setItem("period", p);
-  const idx = ["day","week","month","custom"].indexOf(p);
-  const th = document.getElementById("thumb");
-  if (!animate) th.style.transition = "none";
-  th.style.transform = `translateX(${idx*100}%)`;
-  if (!animate) requestAnimationFrame(()=>th.style.transition="");
-  render();
+/* ---------- Период ---------- */
+function setPeriod(p){ state.period = p; render(); }
+function segHtml(){
+  const idx = ["day","week","month","custom"].indexOf(state.period);
+  const R = state.data ? currentRange(state.data.today) : null;
+  const customLbl = state.period === "custom" ? (R ? rangeLabel(R.from, R.to) : "Всё время") : "Период";
+  return `<div class="seg" id="seg"><div class="thumb" style="transform:translateX(${idx*100}%)"></div>
+    <button data-p="day">Сегодня</button><button data-p="week">Неделя</button><button data-p="month">Месяц</button><button data-p="custom">${esc(customLbl)}</button></div>`;
 }
-seg.addEventListener("click", e => { const b = e.target.closest("button[data-p]"); if (!b) return; haptic("light"); if (b.dataset.p === "custom") openPeriod(); else setPeriod(b.dataset.p); });
-setPeriod(state.period, false);
 
 /* ---------- Clicks ---------- */
 document.getElementById("app").addEventListener("click", e => {
@@ -436,6 +415,7 @@ document.getElementById("app").addEventListener("click", e => {
   if (swipe.openEl) { const inOpen = swipe.openEl.contains(b); closeSwipe(); if (inOpen) return; }
   if (b.dataset.cat !== undefined) { haptic("light"); state.filter = state.filter === b.dataset.cat ? null : b.dataset.cat; render(); }
   else if (b.dataset.act === "clear") { state.filter = null; render(); }
+  else if (b.dataset.act === "more") { state.days = (state.days || 45) + 60; render(); }
   else if (b.dataset.act === "limits") { haptic("light"); openLimits(); }
   else if (b.dataset.act === "export") { haptic("light"); openExport(); }
   else if (b.dataset.act === "chart") { haptic("light"); openChart(); }
@@ -674,18 +654,21 @@ function openChart(){
   const total = sum(cur);
   const byCat = {}; cur.forEach(x => { byCat[x.category] = (byCat[x.category]||0) + x.amount; });
   const cats = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
-  if (!cats.length) { toast("Нет трат за этот период"); return; }
   const r = 90, C = 2*Math.PI*r; let off = 0;
   const segs = cats.map(([c,a]) => { const len = a/total*C; const el = `<circle cx="110" cy="110" r="${r}" stroke="${catOf(c).hex}" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" data-c="${esc(c)}"/>`; off += len; return el; }).join("");
   const period = state.period === "custom" ? (R ? rangeLabel(R.from, R.to) : "всё время") : {day:"сегодня", week:"7 дней", month:"30 дней"}[state.period];
   let hot = null;
-  openSheet(`<div class="grab"></div>
-    <div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>По категориям</h2><span></span></div>
+  const body = `${segHtml()}
     <div class="hint" style="text-align:center">${period} · ${cur.length} ${plural(cur.length,"трата","траты","трат")}</div>
-    <div class="bigchart" id="bigchart"><svg viewBox="0 0 220 220">${segs}</svg><div class="c" id="chartC"><b class="num">${fmt(total)}</b><span>всего</span></div></div>
-    <div class="card legend" id="legend">${cats.map(([c,a]) => `<button type="button" class="row" data-c="${esc(c)}"><div class="ico" style="background:${catOf(c).c};width:30px;height:30px;font-size:15px;border-radius:8px">${catOf(c).e}</div><div class="main"><div class="name">${esc(c)}</div></div><div><div class="amt num">${fmt(a)}</div><div class="sub right num">${(a/total*100).toFixed(1)}%</div></div></button>`).join("")}</div>
-    <div class="hint" style="text-align:center;padding-top:10px">Нажмите на категорию ещё раз, чтобы показать её операции</div>`, () => {
-    document.getElementById("cancel").onclick = closeSheet;
+    <div class="bigchart" id="bigchart"><svg viewBox="0 0 220 220">${segs || `<circle cx="110" cy="110" r="${r}" stroke="var(--fill2)" stroke-dasharray="${C} 0"/>`}</svg><div class="c" id="chartC"><b class="num">${fmt(total)}</b><span>всего</span></div></div>
+    ${cats.length ? `<div class="card legend" id="legend">${cats.map(([c,a]) => `<button type="button" class="row" data-c="${esc(c)}"><div class="ico" style="background:${catOf(c).c};width:30px;height:30px;font-size:15px;border-radius:8px">${catOf(c).e}</div><div class="main"><div class="name">${esc(c)}</div></div><div><div class="amt num">${fmt(a)}</div><div class="sub right num">${(a/total*100).toFixed(1)}%</div></div></button>`).join("")}</div>
+    <div class="hint" style="text-align:center;padding-top:10px">Нажмите на категорию ещё раз, чтобы показать её операции</div>` : `<div class="empty">Нет трат за этот период</div>`}`;
+  const fresh = !sheet.classList.contains("show") || !document.getElementById("bigchart");
+  if (fresh) openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>По категориям</h2><span></span></div><div id="chartBody"></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
+  document.getElementById("chartBody").innerHTML = body;
+  (() => {
+    document.getElementById("seg").addEventListener("click", e => { const b = e.target.closest("button[data-p]"); if (!b) return; haptic("light"); if (b.dataset.p === "custom") openPeriod(openChart); else { setPeriod(b.dataset.p); openChart(); } });
+    if (!cats.length) return;
     const chart = document.getElementById("bigchart"), legend = document.getElementById("legend"), center = document.getElementById("chartC");
     const select = c => {
       if (hot === c) { state.filter = c; closeSheet(); render(); haptic("medium"); const el = document.querySelector('.section:nth-of-type(4)'); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
@@ -696,7 +679,7 @@ function openChart(){
     };
     chart.addEventListener("click", e => { const el = e.target.closest("circle"); if (el) select(el.dataset.c); else if (hot) { hot = null; chart.querySelectorAll("circle").forEach(x => x.classList.remove("dim","hot")); legend.querySelectorAll(".row").forEach(x => x.classList.remove("hot")); center.innerHTML = `<b class="num">${fmt(total)}</b><span>всего</span>`; } });
     legend.addEventListener("click", e => { const el = e.target.closest(".row"); if (el) select(el.dataset.c); });
-  });
+  })();
 }
 
 /* ---------- Произвольный период: пресеты + календарь ---------- */
@@ -712,7 +695,7 @@ function presets(todayIso){
     ["Всё время", null, null],
   ];
 }
-function openPeriod(){
+function openPeriod(after){
   const todayIso = state.data ? state.data.today : toIso(new Date());
   let from = state.range ? state.range.from : null, to = state.range ? state.range.to : null;
   let view = isoToDate(to || todayIso); view = new Date(view.getFullYear(), view.getMonth(), 1);
@@ -766,8 +749,8 @@ function openPeriod(){
     document.getElementById("apply").onclick = () => {
       if (from && !to) to = from;
       state.range = from ? {from, to} : null;
-      localStorage.setItem("range", JSON.stringify(state.range));
       closeSheet(); setPeriod("custom");
+      if (after) setTimeout(after, 50);
     };
   });
 }
