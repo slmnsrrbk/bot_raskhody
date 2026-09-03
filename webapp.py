@@ -24,6 +24,7 @@ import export
 import receipt
 import storage
 import currencies
+import rates
 
 BASE_DIR = Path(__file__).resolve().parent
 try:
@@ -162,6 +163,8 @@ def parse_date(value) -> str:
 
 async def api_state(request: web.Request):
     uid = request["user_id"]
+    if rates.is_stale():
+        asyncio.get_running_loop().run_in_executor(None, rates.refresh)   # в фоне, ответ не ждёт
     return web.json_response({
         "today": today().isoformat(),
         "categories": storage.all_categories(uid),
@@ -170,6 +173,7 @@ async def api_state(request: web.Request):
         "user": {"id": uid, "first_name": request["user"].get("first_name", ""), "is_admin": is_admin(uid, request["user"].get("username"))},
         "settings": storage.get_settings(uid),
         "currencies": currencies.as_list(),
+        "rates": rates.info(),
     })
 
 
@@ -221,7 +225,10 @@ async def api_add(request: web.Request):
     if not category:
         category = await asyncio.get_running_loop().run_in_executor(None, detect_category, name, uid)
     note = str(body.get("note") or "")
-    return web.json_response(storage.add_expense(uid, name, amount, category, date, note), status=201)
+    currency = str(body.get("currency") or "").upper()
+    if currency and not currencies.is_valid(currency):
+        raise _error(web.HTTPBadRequest, "Неизвестная валюта")
+    return web.json_response(storage.add_expense(uid, name, amount, category, date, note, currency or None), status=201)
 
 
 async def api_update(request: web.Request):
@@ -244,6 +251,10 @@ async def api_update(request: web.Request):
         fields["date"] = parse_date(body["date"])
     if "note" in body:
         fields["note"] = str(body["note"] or "")
+    if body.get("currency"):
+        if not currencies.is_valid(str(body["currency"]).upper()):
+            raise _error(web.HTTPBadRequest, "Неизвестная валюта")
+        fields["currency"] = str(body["currency"]).upper()
     item = storage.update_expense(uid, expense_id, **fields)
     if item and fields.get("category"):
         storage.cache_set(ai.normalize(item["name"]), item["category"], uid)   # запоминаем выбор
@@ -306,8 +317,9 @@ async def api_bulk(request: web.Request):
         if not name:
             continue
         cat = it.get("category") if it.get("category") in storage.all_categories(uid) else (ai.by_keywords(name) or "Другое")
+        cur = str(it.get("currency") or "").upper()
         clean.append({"name": name, "amount": parse_amount(it.get("amount")), "category": cat, "date": parse_date(it.get("date")),
-                      "note": str(it.get("note") or "")})
+                      "note": str(it.get("note") or ""), "currency": cur if currencies.is_valid(cur) else None})
     if not clean:
         raise _error(web.HTTPBadRequest, "Нет позиций для добавления")
     added = storage.add_expenses_bulk(uid, clean)

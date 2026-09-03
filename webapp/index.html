@@ -329,6 +329,20 @@ const catOf = c => CAT[c] || { e:"🏷️", c: EXTRA_COLORS[[...String(c)].reduc
 const allCats = () => (state.data && state.data.categories) || Object.keys(CAT);
 const NBSP = " ";
 const curSym = () => (state.data && state.data.settings && state.data.settings.symbol) || "₽";
+const curCode = () => (state.data && state.data.settings && state.data.settings.currency) || "RUB";
+const symOf = code => { const c = ((state.data && state.data.currencies) || []).find(x => x.code === code); return c ? (c.symbol || c.code) : code; };
+/* чипы валют для формы: основная + избранные */
+function curChips(selected){
+  const st = (state.data && state.data.settings) || {currency:"RUB", favorites:["RUB","USD","EUR"]};
+  const codes = [st.currency].concat(st.favorites.filter(c => c !== st.currency)); if (selected && !codes.includes(selected)) codes.push(selected);
+  return `<div class="chips" id="curChips" style="padding:0 0 12px">${codes.map(c => `<button type="button" class="chip ${c===selected?"sel":""}" data-cur="${c}">${esc(symOf(c))} ${c}</button>`).join("")}</div>`;
+}
+function bindCurChips(){
+  const box = document.getElementById("curChips"); if (!box) return () => curCode();
+  box.addEventListener("click", e => { const b = e.target.closest(".chip"); if (!b) return; haptic("light"); box.querySelectorAll(".chip").forEach(x => x.classList.toggle("sel", x === b)); const lbl = document.querySelector(".amount-field .cur"); if (lbl) lbl.textContent = curLabel(b.dataset.cur); });
+  return () => { const sel = box.querySelector(".chip.sel"); return sel ? sel.dataset.cur : curCode(); };
+}
+const curLabel = code => { const c = ((state.data && state.data.currencies) || []).find(x => x.code === code); return c ? (c.symbol || c.code) + " · " + c.name : code; };
 const curName = () => { const d = state.data; if (!d || !d.settings) return "рублей"; const c = (d.currencies || []).find(x => x.code === d.settings.currency); return c ? (c.symbol || c.code) + " · " + c.name : d.settings.currency; };
 const fmt = n => Math.round(n).toLocaleString("ru-RU").replace(/\s/g, NBSP) + NBSP + curSym();
 const MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
@@ -473,7 +487,7 @@ function dayHtml(k, rows, todayIso){
       <div class="sw-side sw-right"><button type="button" class="sw-btn del" data-del="${x.id}" aria-label="Удалить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button></div>
       <div class="sw-c"><button class="row" data-id="${x.id}">
       <div class="ico" style="background:${m.c}">${m.e}</div>
-      <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}${x.note ? " · " + esc(x.note) : ""}</div></div>
+      <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}${x.currency && x.currency !== curCode() ? " · " + x.orig_amount.toLocaleString("ru-RU") + " " + x.currency : ""}${x.note ? " · " + esc(x.note) : ""}</div></div>
       <div class="amt num">−${fmt(x.amount)}</div></button></div></div>`; }).join("")}</div></div>`;
 }
 function appendDays(){
@@ -685,7 +699,7 @@ async function deleteWithUndo(id){
   try {
     await api("/api/expenses/" + id, {method:"DELETE"});
     toastAction(`Удалено: ${item.name}`, "Вернуть", async () => {
-      try { await api("/api/expenses", {method:"POST", body: JSON.stringify({name: item.name, amount: item.amount, category: item.category, date: item.iso, note: item.note || ""})}); haptic("ok"); toast("Возвращено"); await load(false); }
+      try { await api("/api/expenses", {method:"POST", body: JSON.stringify({name: item.name, amount: item.orig_amount != null ? item.orig_amount : item.amount, currency: item.currency, category: item.category, date: item.iso, note: item.note || ""})}); haptic("ok"); toast("Возвращено"); await load(false); }
       catch(e){ toast(e.message); }
     });
   } catch(e){ haptic("err"); toast(e.message); await load(false); }
@@ -729,7 +743,8 @@ function formHtml(title, item){
   const today = state.data.today;
   return `<div class="grab"></div>
   <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>${title}</h2><button type="button" class="primary" id="save">Готово</button></div>
-  <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${item?item.amount:""}" autocomplete="off" ${item?"":"autofocus"}><div class="cur">${curName()}</div></div>
+  <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${item?(item.orig_amount != null ? item.orig_amount : item.amount):""}" autocomplete="off" ${item?"":"autofocus"}><div class="cur">${curLabel(item && item.currency ? item.currency : curCode())}</div></div>
+  ${curChips(item && item.currency ? item.currency : curCode())}
   <div class="name-field"><input id="name" enterkeyhint="done" placeholder="Название: кофе, такси…" value="${item?esc(item.name):""}" autocomplete="off" autocapitalize="sentences"></div>
   <div class="fields">
     <div class="field"><label>Дата</label><input id="date" type="date" value="${item?item.iso:today}" max="${today}"></div>
@@ -747,7 +762,8 @@ function openAdd(){
   openSheet(formHtml("Новая трата", null), () => {
     const amount = document.getElementById("amount");
     amount.focus({preventScroll:true});   // синхронно в обработчике касания — так iOS сразу показывает клавиатуру
-    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: "", note: val("note") }, "POST", "/api/expenses", "Добавлено");
+    const getCur = bindCurChips();
+    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: "", note: val("note"), currency: getCur() }, "POST", "/api/expenses", "Добавлено");
     wireEnter(save);
     document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("save").onclick = save;
@@ -756,8 +772,8 @@ function openAdd(){
 function openEdit(id){
   const item = state.data.expenses.find(x=>x.id===id); if (!item) return;
   openSheet(formHtml("Изменить", item), () => {
-    const getCat = bindCats();
-    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat(), note: val("note") }, "PUT", "/api/expenses/"+id, "Сохранено");
+    const getCat = bindCats(), getCur = bindCurChips();
+    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat(), note: val("note"), currency: getCur() }, "PUT", "/api/expenses/"+id, "Сохранено");
     wireEnter(save);
     document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("save").onclick = save;
@@ -847,7 +863,8 @@ async function uploadReceipt(f){
 function showReceipt(rc){
   const today = state.data.today, base = rc.date || today;
   /* у каждой позиции своя дата: из списка на фото, иначе дата чека */
-  let items = rc.items.map(x => Object.assign({}, x, { date: x.date || base }));
+  const rcCur = rc.source === "qr" || rc.source === "qr-sum" ? "RUB" : curCode();
+  let items = rc.items.map(x => Object.assign({}, x, { date: x.date || base, currency: x.currency || rcCur }));
   const render = () => {
     const total = items.reduce((s,x)=>s+x.amount,0);
     const dates = [...new Set(items.map(x => x.date))].sort().reverse();
@@ -884,7 +901,7 @@ function showReceipt(rc){
     const it = items[i];
     sheet.innerHTML = `<div class="grab"></div>
       <div class="sheet-h"><button type="button" id="back">Назад</button><h2>Позиция</h2><button type="button" class="primary" id="ok">Готово</button></div>
-      <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${it.amount}" autocomplete="off"><div class="cur">${curName()}</div></div>
+      <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${it.amount}" autocomplete="off"><div class="cur">${curLabel(it.currency || curCode())}</div></div>
       <div class="name-field"><input id="name" enterkeyhint="done" placeholder="Название" value="${esc(it.name)}" autocomplete="off" autocapitalize="sentences"></div>
       <div class="fields"><div class="field"><label>Дата</label><input id="date" type="date" value="${it.date}" max="${today}"></div></div>
       <div class="hint">Категория</div>${catPicker(it.category)}
@@ -894,7 +911,7 @@ function showReceipt(rc){
       const name = val("name").trim(), amount = Math.round(parseFloat(String(val("amount")).replace(",", ".")));
       if (!name) return toast("Введите название"), haptic("err");
       if (!(amount > 0)) return toast("Введите сумму"), haptic("err");
-      items[i] = { name, amount, category: getCat() || it.category, date: val("date") || it.date };
+      items[i] = { name, amount, category: getCat() || it.category, date: val("date") || it.date, currency: it.currency };
       haptic("ok"); render();
     };
     wireEnter(done);
@@ -917,7 +934,9 @@ function openSettings(){
       <button type="button" class="srow" id="sLim">${ic("var(--orange)", '<path d="M4.5 16.5A8.5 8.5 0 1 1 19.5 16.5"/><path d="M12 13l3.5-4"/>')}<span>Лимиты</span><span class="val">${lim ? lim + " " + plural(lim,"лимит","лимита","лимитов") : "не заданы"}</span>${CHEV}</button>
       ${d.user && d.user.is_admin ? `<button type="button" class="srow" id="sAdm">${ic("var(--purple)", '<path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6z"/><path d="M9.5 12l2 2 3.5-4"/>')}<span>Админка</span>${CHEV}</button>` : ""}
     </div>
-    <div class="hint">Валюта влияет на отображение сумм в приложении, боте и выгрузке. Пересчёта курсов нет: суммы хранятся как введены.</div>`, () => {
+    ${tg && tg.addToHomeScreen ? `<div class="card" style="margin-bottom:18px"><button type="button" class="srow" id="sHome">${ic("var(--blue)", '<path d="M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10"/>')}<span>Добавить на экран «Домой»</span>${CHEV}</button></div>` : ""}
+    <div class="hint">Суммы показываются в основной валюте по текущему курсу${d.rates && d.rates.date ? ` (${esc(d.rates.source)}, ${esc(d.rates.date)})` : ""}. Каждая трата хранит сумму и валюту, в которых была введена, поэтому смена валюты ничего не портит.</div>`, () => {
+    const h = document.getElementById("sHome"); if (h) h.onclick = () => { haptic("light"); try { tg.addToHomeScreen(); } catch(e){ toast("Недоступно в этой версии Telegram"); } };
     document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("sCur").onclick = () => { haptic("light"); openCurrency(); };
     document.getElementById("sLim").onclick = () => { haptic("light"); openLimits(); };

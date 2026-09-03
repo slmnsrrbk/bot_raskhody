@@ -34,6 +34,7 @@ from telegram.ext import (
 
 import ai
 import export
+import rates
 import parsing
 import receipt
 import storage
@@ -115,7 +116,8 @@ def parse_expenses(text: str, spoken: bool = False, user_id: int = None):
             logger.warning("Разбор моделью: %s", e)
             ai_items = None
         if ai_items:
-            return [{"name": i["name"], "amount": i["amount"], "date": datetime.date.fromisoformat(i["date"]), "category": i.get("category")}
+            return [{"name": i["name"], "amount": i["amount"], "date": datetime.date.fromisoformat(i["date"]), "category": i.get("category"),
+                     "currency": i.get("currency")}
                     for i in ai_items]
     items, _unparsed = parsing.parse_free_text(text, today())
     return items
@@ -557,6 +559,8 @@ async def _finish_receipt(update, context, user_id: int, parsed: dict, wait):
     date = parsed["date"] or today().isoformat()
     for it in parsed["items"]:
         it["date"] = it.get("date") or date            # у позиций из списка свои даты
+        if parsed.get("source") in ("qr", "qr-sum"):
+            it["currency"] = "RUB"                     # фискальный чек всегда в рублях
     added = storage.add_expenses_bulk(user_id, parsed["items"])
     token = secrets.token_hex(4)
     context.user_data.setdefault("receipts", {})[token] = [a["id"] for a in added]
@@ -736,6 +740,8 @@ async def post_init(app: Application):
             menu_button=MenuButtonWebApp(text="Приложение", web_app=WebAppInfo(url=WEBAPP_URL))
         )
     hour, minute = (int(x) for x in DAILY_REPORT_TIME.split(":"))
+    await in_thread(rates.refresh)                                   # курсы валют при старте
+    scheduler.add_job(lambda: rates.refresh(), "interval", hours=6)   # и дальше каждые 6 часов
     scheduler.add_job(send_daily_report, "cron", args=[app], hour=hour, minute=minute)
     scheduler.add_job(send_weekly_report, "cron", args=[app], day_of_week="fri", hour=23, minute=59)
     scheduler.add_job(send_monthly_report, "cron", args=[app], day="last", hour=23, minute=59)

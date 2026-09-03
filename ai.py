@@ -192,7 +192,8 @@ def classify_many(names, user_id=None):
 
 EXPENSES_PROMPT = (
     "Ты разбираешь сообщение пользователя о его расходах, написанное в свободной форме. Извлеки список трат и верни ТОЛЬКО JSON-массив вида "
-    '[{{"name": "короткое название траты", "amount": число в рублях, "date": "ГГГГ-ММ-ДД", "category": "одна из категорий"}}]. '
+    '[{{"name": "короткое название траты", "amount": число, "date": "ГГГГ-ММ-ДД", "category": "одна из категорий", '
+    '"currency": "ISO-код валюты, если она указана явно ($, €, долларов, тенге, лир…), иначе null"}}]. '
     "Категории: {categories}. "
     "Сегодня {today}. «Вчера» — {yesterday}, «позавчера» — {before_yesterday}. Даты вроде «2 сентября», «02.09», «01.09.2026» переводи в ГГГГ-ММ-ДД "
     "(без года — ближайшая прошедшая дата). Дата может стоять в любом месте фразы: «250 на такси 2 сентября» — это name «такси», amount 250, date — ближайшее прошедшее 2 сентября. "
@@ -270,7 +271,8 @@ def parse_expenses_text(text: str, today, spoken: bool = False, categories=None)
                 date = today.isoformat()
         cat = str(it.get("category") or "").strip()
         cat = _pick_category(cat, cats) if cat else None
-        out.append({"name": name[:100], "amount": amount, "date": date, "category": cat})
+        cur = str(it.get("currency") or "").strip().upper()
+        out.append({"name": name[:100], "amount": amount, "date": date, "category": cat, "currency": cur if len(cur) == 3 else None})
     return out
 
 

@@ -31,6 +31,9 @@ class WebAppApiTests(AioHTTPTestCase):
         webapp.storage.init_db()
         webapp.DEV_MODE = True
         webapp._buckets.clear()
+        webapp.storage._settings_cache.clear()
+        webapp.rates.reset_cache()
+        webapp.rates._save({"base": "USD", "rates": {"USD": 1.0, "RUB": 80.0, "EUR": 0.8, "KZT": 500.0}, "date": "test", "source": "test", "ts": __import__("time").time()})
         webapp.storage.add_expense(0, "Кофе", 250, "Еда", "03.09.2026")
         webapp.storage.add_expense(0, "Такси", 480, "Транспорт", "02.09.2026")
         webapp.storage.add_expense(7, "Чужая", 999, "Еда", "03.09.2026")  # другой пользователь
@@ -62,6 +65,22 @@ class WebAppApiTests(AioHTTPTestCase):
         r = await self.client.delete(f"/api/expenses/{item['id']}")
         self.assertEqual(r.status, 200)
         self.assertEqual(len(webapp.storage.list_expenses(0)), 2)
+
+    async def test_currency_conversion_and_switch(self):
+        r = await self.client.post("/api/expenses", json={"name": "отель", "amount": 100, "category": "Другое", "date": "2026-09-01", "currency": "USD"})
+        item = await r.json()
+        self.assertEqual((item["amount"], item["orig_amount"], item["currency"]), (8000, 100, "USD"))   # в рублях по курсу 80
+        await self.client.put("/api/limits", json={"daily": 8000})
+        r = await self.client.put("/api/settings", json={"currency": "USD"})
+        self.assertEqual((await r.json())["currency"], "USD")
+        state = await (await self.client.get("/api/state")).json()
+        hotel = next(x for x in state["expenses"] if x["name"] == "Отель")
+        coffee = next(x for x in state["expenses"] if x["name"] == "Кофе")
+        self.assertEqual((hotel["amount"], coffee["amount"], coffee["currency"]), (100, 3, "RUB"))        # 250 ₽ ≈ 3 $
+        self.assertEqual(state["limits"]["daily"], 100)                                                   # лимит пересчитан
+        self.assertEqual(state["rates"]["source"], "test")
+        r = await self.client.post("/api/expenses", json={"name": "x", "amount": 1, "currency": "XXX"})
+        self.assertEqual(r.status, 400)
 
     async def test_note_is_optional_and_editable(self):
         r = await self.client.post("/api/expenses", json={"name": "обед", "amount": 300, "category": "Еда", "date": "2026-09-01", "note": "  с коллегами  "})

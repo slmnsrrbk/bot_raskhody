@@ -16,6 +16,7 @@ from pathlib import Path
 
 import crypto
 import currencies
+import rates
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = Path(os.getenv("DB_FILE", str(BASE_DIR / "data.db")))
@@ -53,7 +54,8 @@ CREATE TABLE IF NOT EXISTS expenses (
     category    TEXT NOT NULL,
     date        TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    note        TEXT
+    note        TEXT,
+    currency    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_expenses_user_date ON expenses(user_id, date);
 CREATE TABLE IF NOT EXISTS limits (
@@ -103,6 +105,9 @@ def init_db():
         cols = {r[1] for r in con.execute("PRAGMA table_info(expenses)").fetchall()}
         if "note" not in cols:                      # база, созданная до появления заметок
             con.execute("ALTER TABLE expenses ADD COLUMN note TEXT")
+        if "currency" not in cols:                  # до мультивалютности всё вводилось в рублях
+            con.execute("ALTER TABLE expenses ADD COLUMN currency TEXT")
+            con.execute("UPDATE expenses SET currency='RUB' WHERE currency IS NULL")
         ucols = {r[1] for r in con.execute("PRAGMA table_info(users)").fetchall()}
         if "blocked" not in ucols:
             con.execute("ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
@@ -292,9 +297,16 @@ def all_user_ids():
 # Траты
 # ---------------------------------------------------------------------------
 def _row(r) -> dict:
+    """Запись траты. amount — в основной валюте пользователя по текущему курсу; orig_amount/currency — как введено."""
     uid = r["user_id"]
-    note = r["note"] if "note" in r.keys() else None
-    return {"id": r["id"], "name": crypto.decrypt(uid, r["name"]), "amount": int(crypto.decrypt(uid, r["amount"])),
+    keys = r.keys()
+    note = r["note"] if "note" in keys else None
+    orig = int(crypto.decrypt(uid, r["amount"]))
+    cur = (r["currency"] if "currency" in keys and r["currency"] else currencies.DEFAULT).upper()
+    main = _settings_cached(uid)["currency"]
+    amount = orig if cur == main else int(round(rates.convert(orig, cur, main)))
+    return {"id": r["id"], "name": crypto.decrypt(uid, r["name"]), "amount": amount,
+            "orig_amount": orig, "currency": cur,
             "category": crypto.decrypt(uid, r["category"]), "iso": r["date"], "date": to_display(r["date"]),
             "note": crypto.decrypt(uid, note) if note else ""}
 
@@ -356,17 +368,21 @@ def _clean_note(note) -> str:
     return " ".join(str(note or "").split())[:NOTE_MAX]
 
 
-def add_expense(user_id: int, name: str, amount: int, category: str, date, note: str = None) -> dict:
+def add_expense(user_id: int, name: str, amount: int, category: str, date, note: str = None, currency: str = None) -> dict:
+    """currency — валюта введённой суммы; по умолчанию основная валюта пользователя."""
     iso = to_iso(date)
     name = name.strip()
     name = name[:1].upper() + name[1:]
     category = _valid_category(user_id, category)
     note = _clean_note(note)
+    currency = (currency or "").upper()
+    if not currencies.is_valid(currency):
+        currency = _settings_cached(user_id)["currency"]
     with connect() as con:
         cur = con.execute(
-            "INSERT INTO expenses(user_id, name, amount, category, date, created_at, note) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO expenses(user_id, name, amount, category, date, created_at, note, currency) VALUES(?,?,?,?,?,?,?,?)",
             (user_id, _enc(user_id, name[:100]), _enc(user_id, int(amount)), _enc(user_id, category), iso, _now(),
-             _enc(user_id, note) if note else None),
+             _enc(user_id, note) if note else None, currency),
         )
         return _row(con.execute("SELECT * FROM expenses WHERE id=?", (cur.lastrowid,)).fetchone())
 
@@ -389,9 +405,11 @@ def update_expense(user_id: int, expense_id: int, **fields):
         allowed["date"] = to_iso(fields["date"])
     if "note" in fields:
         allowed["note"] = _clean_note(fields["note"])
+    if fields.get("currency") and currencies.is_valid(str(fields["currency"]).upper()):
+        allowed["currency"] = str(fields["currency"]).upper()
     if not allowed:
         return get_expense(user_id, expense_id)
-    values = [v if k == "date" else (None if k == "note" and not v else _enc(user_id, v)) for k, v in allowed.items()]
+    values = [v if k in ("date", "currency") else (None if k == "note" and not v else _enc(user_id, v)) for k, v in allowed.items()]
     sets = ", ".join(f"{k}=?" for k in allowed)
     with connect() as con:
         con.execute(f"UPDATE expenses SET {sets} WHERE id=? AND user_id=?", (*values, expense_id, user_id))
@@ -459,6 +477,16 @@ def users_with_expenses(days: int, today: datetime.date = None):
 # ---------------------------------------------------------------------------
 # Настройки пользователя: основная валюта и избранные валюты
 # ---------------------------------------------------------------------------
+_settings_cache = {}
+
+
+def _settings_cached(user_id: int) -> dict:
+    s = _settings_cache.get(user_id)
+    if s is None:
+        s = _settings_cache[user_id] = get_settings(user_id)
+    return s
+
+
 def get_settings(user_id: int) -> dict:
     with connect() as con:
         r = con.execute("SELECT currency, favorites FROM users WHERE id=?", (user_id,)).fetchone()
@@ -490,10 +518,19 @@ def set_settings(user_id: int, currency: str = None, favorites=None) -> dict:
             if currencies.is_valid(c) and c not in clean:
                 clean.append(c)
         fields.append("favorites=?"); values.append(json.dumps(clean[:30]))
+    old = get_settings(user_id)
     if fields:
         with connect() as con:
             con.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=?", (*values, user_id))
-    return get_settings(user_id)
+    _settings_cache.pop(user_id, None)
+    new = get_settings(user_id)
+    if currency and currency != old["currency"]:
+        # лимиты заданы в основной валюте — пересчитываем их по курсу, чтобы смысл не менялся
+        lim = get_limits(user_id)
+        conv = {k: (int(round(rates.convert(v, old["currency"], currency))) if v else None) for k, v in lim.items()}
+        if any(lim.values()):
+            set_limits(user_id, **conv)
+    return new
 
 
 def currency_symbol(user_id: int) -> str:
@@ -554,7 +591,7 @@ def cache_set(name: str, category: str, user_id=None):
 def add_expenses_bulk(user_id: int, items):
     """Добавляет несколько трат за раз; возвращает список записей."""
     return [add_expense(user_id, it["name"], it["amount"], it.get("category", "Другое"), it.get("date") or datetime.date.today(),
-                        it.get("note"))
+                        it.get("note"), it.get("currency"))
             for it in items]
 
 

@@ -43,6 +43,7 @@ class StorageTests(unittest.TestCase):
         storage.LEGACY_LIMITS = storage.Path(self.tmp.name) / "limits.json"
         crypto.KEY_FILE = storage.Path(self.tmp.name) / ".k"; crypto.reset_cache()
         storage.init_db()
+        storage._settings_cache.clear()
         storage.upsert_user(1, "A")
         storage.upsert_user(2, "B")
 
@@ -230,6 +231,27 @@ class ProcessExpenseTests(StorageTests):
         app = main.build_app("123:abc")
         names = {getattr(h.callback, "__name__", "") for group in app.handlers.values() for h in group}
         self.assertIn("handle_voice", names)
+
+
+class RatesTests(unittest.TestCase):
+    def test_cbr_fallback_and_convert(self):
+        import rates
+        from unittest import mock
+        rates.reset_cache()
+
+        class R:
+            def raise_for_status(self): pass
+            def json(self): return {"Date": "2026-09-04", "Valute": {"USD": {"Value": 80.0, "Nominal": 1}, "KZT": {"Value": 16.0, "Nominal": 100}}}
+
+        with mock.patch.object(rates, "_fetch_primary", side_effect=RuntimeError("down")), mock.patch.object(rates.requests, "get", return_value=R()):
+            data = rates.refresh(force=True)
+        self.assertEqual(data["source"], "cbr.ru")
+        self.assertAlmostEqual(rates.rate("USD", "RUB"), 80.0)
+        self.assertAlmostEqual(rates.convert(1000, "KZT", "RUB"), 160.0, places=3)
+        self.assertEqual(rates.rate("USD", "XXX"), 1.0)          # неизвестная валюта — без пересчёта
+        self.assertFalse(rates.is_stale())
+        rates.reset_cache()
+        self.assertEqual(rates.get()["source"], "cbr.ru")        # поднялось из meta
 
 
 class NoteMigrationTests(unittest.TestCase):
