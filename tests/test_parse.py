@@ -177,7 +177,7 @@ class ProcessExpenseTests(StorageTests):
         class Ctx:
             user_data = {}
 
-        def fake_parse(text, today, spoken=False):
+        def fake_parse(text, today, spoken=False, categories=None):
             self.assertTrue(spoken)
             return [{"name": "такси", "amount": 350, "date": today.isoformat()},
                     {"name": "кофе", "amount": 200, "date": today.isoformat()}]
@@ -188,6 +188,43 @@ class ProcessExpenseTests(StorageTests):
         names = {i["name"] for i in storage.list_expenses(5)}
         self.assertEqual({n.lower() for n in names}, {"такси", "кофе"})
         self.assertIn("Добавлено 2 траты", sent[0][1])
+
+    def test_free_text_goes_to_model_first_with_category(self):
+        import asyncio
+        from unittest import mock
+        sent = []
+
+        class FakeMsg:
+            async def edit_text(self, text, reply_markup=None):
+                sent.append(("edit", text))
+
+        class FakeBot:
+            async def send_message(self, chat_id, text, **kw):
+                sent.append(("send", text))
+                return FakeMsg()
+
+        class Ctx:
+            user_data = {}
+
+        seen = {}
+
+        def fake_parse(text, today, spoken=False, categories=None):
+            seen["categories"] = categories
+            return [{"name": "такси", "amount": 250, "date": "2026-09-02", "category": "Транспорт"}]
+
+        with mock.patch.object(main.ai, "POLZA_API_KEY", "k"), mock.patch.object(main.ai, "parse_expenses_text", side_effect=fake_parse), \
+                mock.patch.object(main.ai, "classify_many", side_effect=AssertionError("модель уже дала категорию")):
+            asyncio.run(main.process_expense(FakeBot(), 7, "250 на такси 2 сентября", Ctx()))
+        items = storage.list_expenses_between(7, "2026-09-02", "2026-09-02")
+        self.assertEqual([(i["name"], i["amount"], i["category"]) for i in items], [("Такси", 250, "Транспорт")])
+        self.assertIn("Другое", seen["categories"])
+        self.assertIn("02.09.2026", sent[0][1])
+
+    def test_model_failure_falls_back_to_strict_parser(self):
+        from unittest import mock
+        with mock.patch.object(main.ai, "POLZA_API_KEY", "k"), mock.patch.object(main.ai, "parse_expenses_text", side_effect=RuntimeError("down")):
+            items = main.parse_expenses("такси 350", user_id=1)
+        self.assertEqual([(i["name"], i["amount"]) for i in items], [("Такси", 350)])
 
     def test_voice_handler_registered(self):
         app = main.build_app("123:abc")

@@ -90,15 +90,22 @@ def parse_expense(text: str):
     return None
 
 
-def parse_expenses(text: str, spoken: bool = False):
-    """Все траты из свободного текста: строгий разбор, при неудаче — модель.
-    Для голосовых (spoken=True) сначала модель: речь разговорная, суммы часто словами."""
-    items, unparsed = parsing.parse_free_text(text, today())
-    if items and not unparsed and not spoken:
-        return items
-    ai_items = ai.parse_expenses_text(text, today(), spoken=spoken)
-    if ai_items:
-        return [{"name": i["name"], "amount": i["amount"], "date": datetime.date.fromisoformat(i["date"])} for i in ai_items]
+def parse_expenses(text: str, spoken: bool = False, user_id: int = None):
+    """Все траты из свободного текста.
+
+    Сначала модель: она понимает контекст («250 на такси 2 сентября», списки с датами, суммы словами)
+    и сразу предлагает категорию. Если модель недоступна или ничего не нашла — строгий разбор."""
+    if ai.POLZA_API_KEY:
+        cats = storage.all_categories(user_id) if user_id is not None else None
+        try:
+            ai_items = ai.parse_expenses_text(text, today(), spoken=spoken, categories=cats)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Разбор моделью: %s", e)
+            ai_items = None
+        if ai_items:
+            return [{"name": i["name"], "amount": i["amount"], "date": datetime.date.fromisoformat(i["date"]), "category": i.get("category")}
+                    for i in ai_items]
+    items, _unparsed = parsing.parse_free_text(text, today())
     return items
 
 
@@ -277,7 +284,7 @@ def _batch_text(items) -> str:
 
 
 async def process_expense(bot, user_id: int, text: str, context=None, spoken: bool = False):
-    items = await in_thread(parse_expenses, text, spoken)
+    items = await in_thread(parse_expenses, text, spoken, user_id)
     if not items:
         if spoken:
             await bot.send_message(user_id, "🤷 Не нашёл трат в голосовом. Скажите, например: «такси триста пятьдесят и кофе двести».")
@@ -286,8 +293,11 @@ async def process_expense(bot, user_id: int, text: str, context=None, spoken: bo
                                    parse_mode="Markdown")
         return
     # Быстрая категория (словарь/кэш) — сразу; остальное уточнит модель в фоне
-    quick = [storage.cache_get(ai.normalize(it["name"]), user_id) or ai.by_keywords(it["name"]) or storage.cache_get(ai.normalize(it["name"])) for it in items]
-    added = storage.add_expenses_bulk(user_id, [dict(it, category=c or "Другое") for it, c in zip(items, quick)])
+    # Категория: память пользователя → ответ модели → словарь → общий кэш; остальное уточнит модель в фоне
+    quick = [storage.cache_get(ai.normalize(it["name"]), user_id) or it.get("category") or ai.by_keywords(it["name"])
+             or storage.cache_get(ai.normalize(it["name"])) for it in items]
+    added = storage.add_expenses_bulk(user_id, [dict({k: v for k, v in it.items() if k != "category"}, category=c or "Другое")
+                                                for it, c in zip(items, quick)])
     if len(added) == 1:
         msg = await bot.send_message(user_id, _single_text(added[0]), reply_markup=_single_kb(added[0]["id"]))
         token = None

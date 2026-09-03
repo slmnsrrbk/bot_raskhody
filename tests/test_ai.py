@@ -96,5 +96,5 @@ class TranscribeTests(unittest.TestCase):
 
         with mock.patch.object(ai, "POLZA_API_KEY", "k"), mock.patch.object(ai, "_polza_chat", side_effect=fake):
             out = ai.parse_expenses_text("потратил на такси триста пятьдесят", datetime.date(2026, 9, 3), spoken=True)
-        self.assertEqual(out, [{"name": "такси", "amount": 350, "date": "2026-09-03"}])
+        self.assertEqual(out, [{"name": "такси", "amount": 350, "date": "2026-09-03", "category": None}])
         self.assertIn("триста пятьдесят", seen["system"])

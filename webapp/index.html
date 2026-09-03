@@ -39,7 +39,7 @@ button{background:none;border:0;padding:0;cursor:pointer}
   box-shadow:0 4px 12px rgba(0,122,255,.35);transition:transform .15s}
 .addbtn:active{transform:scale(.92)}
 .addbtn svg{width:18px;height:18px}
-.hbtns{display:flex;gap:10px;align-items:center}
+.hbtns{display:flex;gap:8px;align-items:center}
 .addbtn.scan{background:var(--card);color:var(--blue);box-shadow:var(--shadow),0 0 0 .5px var(--sep)}
 .addbtn.scan svg{width:20px;height:20px}
 .rc-item{display:flex;align-items:center;gap:12px;padding:10px 12px 10px 14px;position:relative;width:100%;text-align:left;min-height:58px}
@@ -234,6 +234,9 @@ button{background:none;border:0;padding:0;cursor:pointer}
     <div class="subtitle" id="subtitle">&nbsp;</div>
   </div>
   <div class="hbtns">
+    <button class="addbtn scan" id="limitTop" aria-label="Лимиты">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5A8.5 8.5 0 1 1 19.5 16.5"/><path d="M12 13l3.5-4"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/></svg>
+    </button>
     <button class="addbtn scan" id="scanTop" aria-label="Сканировать чек">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><rect x="8" y="8" width="8" height="8" rx="1.5"/></svg>
     </button>
@@ -459,8 +462,8 @@ function render(){
       <div class="bar"><i style="width:${pct}%"></i></div>
       <div class="l2"><span>${Math.round(pct)}%</span><span class="num">${left>=0?"осталось "+fmt(left):"превышен на "+fmt(-left)}</span></div></div>`;
   }).join("");
-  html += `<section class="section"><div class="section-h"><span>Лимиты</span><button data-act="limits">Изменить</button></div>
-    <div class="card">${limRows || `<button class="row" data-act="limits"><div class="ico" style="background:var(--green)">🎯</div><div class="main"><div class="name">Установить лимит</div><div class="sub">Бот предупредит, если выйдете за рамки</div></div><svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg></button>`}</div></section>`;
+  /* блок лимитов показываем только если лимиты заданы; настраиваются по иконке в шапке */
+  if (limRows) html += `<section class="section"><div class="section-h"><span>Лимиты</span><button data-act="limits">Изменить</button></div><div class="card">${limRows}</div></section>`;
 
   /* лента: все дни подряд, листается без кнопок; пресеты сверху следуют за прокруткой */
   const { groups, keys } = feedDays();
@@ -555,6 +558,7 @@ document.getElementById("app").addEventListener("click", e => {
   else if (b.dataset.id !== undefined) { haptic("light"); openEdit(Number(b.dataset.id)); }
 });
 document.getElementById("addTop").addEventListener("click", () => { haptic("medium"); openAdd(); });
+document.getElementById("limitTop").addEventListener("click", () => { haptic("light"); openLimits(); });
 document.getElementById("mainbtn").addEventListener("click", () => openAdd());
 
 /* ---------- Свайп по строке ---------- */

@@ -191,10 +191,15 @@ def classify_many(names, user_id=None):
 
 
 EXPENSES_PROMPT = (
-    "Извлеки из сообщения пользователя список трат. Верни ТОЛЬКО JSON-массив вида "
-    '[{{"name": "короткое название", "amount": число в рублях, "date": "ГГГГ-ММ-ДД"}}]. '
-    "Сегодня {today}. «Вчера» — это {yesterday}. Строка с датой относится ко всем тратам ниже неё, пока не встретится другая дата. "
-    "Если дата не указана — {today}. Если трат нет, верни []."
+    "Ты разбираешь сообщение пользователя о его расходах, написанное в свободной форме. Извлеки список трат и верни ТОЛЬКО JSON-массив вида "
+    '[{{"name": "короткое название траты", "amount": число в рублях, "date": "ГГГГ-ММ-ДД", "category": "одна из категорий"}}]. '
+    "Категории: {categories}. "
+    "Сегодня {today}. «Вчера» — {yesterday}, «позавчера» — {before_yesterday}. Даты вроде «2 сентября», «02.09», «01.09.2026» переводи в ГГГГ-ММ-ДД "
+    "(без года — ближайшая прошедшая дата). Дата может стоять в любом месте фразы: «250 на такси 2 сентября» — это name «такси», amount 250, date — ближайшее прошедшее 2 сентября. "
+    "Строка с датой относится ко всем тратам ниже неё, пока не встретится другая дата. Если дата не указана — {today}. "
+    "Сумма может стоять до или после названия, с ₽/руб/р, «1 500», «1.5к», «2 тыс». "
+    "В name пиши только предмет траты без предлогов, дат и сумм («на такси» → «такси», «купил продукты» → «продукты»). "
+    "Если в сообщении нет трат с суммами, верни []."
 )
 SPOKEN_NOTE = (
     " Это расшифровка голосового сообщения: речь свободная, разговорная. Суммы могут быть словами "
@@ -227,13 +232,15 @@ def transcribe(audio: bytes, filename: str = "voice.ogg", mime: str = "audio/ogg
     return None
 
 
-def parse_expenses_text(text: str, today, spoken: bool = False):
-    """Запасной разбор свободного текста моделью. -> список {name, amount, date(ISO)} или None.
+def parse_expenses_text(text: str, today, spoken: bool = False, categories=None):
+    """Разбор свободного текста моделью. -> список {name, amount, date(ISO), category|None} или None.
     spoken=True — текст из голосового: разговорная речь, суммы словами."""
     if not POLZA_API_KEY or not text.strip():
         return None
     td = __import__("datetime").timedelta
-    prompt = EXPENSES_PROMPT.format(today=today.isoformat(), yesterday=(today - td(days=1)).isoformat())
+    cats = list(categories or CATEGORIES)
+    prompt = EXPENSES_PROMPT.format(categories=", ".join(cats), today=today.isoformat(),
+                                    yesterday=(today - td(days=1)).isoformat(), before_yesterday=(today - td(days=2)).isoformat())
     if spoken:
         prompt += SPOKEN_NOTE.format(before_yesterday=(today - td(days=2)).isoformat())
     answer = _polza([{"role": "system", "content": prompt}, {"role": "user", "content": text[:4000]}], max_tokens=1200)
@@ -255,7 +262,15 @@ def parse_expenses_text(text: str, today, spoken: bool = False):
             date = storage.to_iso(it.get("date") or today)
         except ValueError:
             date = today.isoformat()
-        out.append({"name": name[:100], "amount": amount, "date": date})
+        if date > today.isoformat():          # будущих трат не бывает — скорее всего перепутан год
+            try:
+                d = __import__("datetime").date.fromisoformat(date)
+                date = d.replace(year=d.year - 1).isoformat()
+            except ValueError:
+                date = today.isoformat()
+        cat = str(it.get("category") or "").strip()
+        cat = _pick_category(cat, cats) if cat else None
+        out.append({"name": name[:100], "amount": amount, "date": date, "category": cat})
     return out
 
 
