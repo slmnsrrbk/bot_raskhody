@@ -100,6 +100,9 @@ class WebAppApiTests(AioHTTPTestCase):
         self.assertGreater(len(await r.read()), 2000)
         r = await self.client.post("/api/expenses/bulk", json={"items": []})
         self.assertEqual(r.status, 400)
+        r = await self.client.post("/api/export", json={"from": "2026-09-03", "to": "2026-09-01"})
+        self.assertEqual(r.status, 200)
+        self.assertIn("2026-09-01_2026-09-03", r.headers["Content-Disposition"])
 
     async def test_receipt_requires_key(self):
         webapp.ai.POLZA_API_KEY = ""

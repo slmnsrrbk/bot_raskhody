@@ -266,11 +266,19 @@ async def api_export(request: web.Request):
     """Excel за период: в Telegram отправляем файл в чат с ботом, в dev-режиме отдаём файл напрямую."""
     uid = request["user_id"]
     body = await request.json()
-    key = str(body.get("period", "30"))
-    label, days = export.PERIODS.get(key, export.PERIODS["30"])
-    items = storage.list_expenses(uid, days, today())
+    if body.get("from") and body.get("to"):
+        d_from, d_to = parse_date(body["from"]), parse_date(body["to"])
+        if d_from > d_to:
+            d_from, d_to = d_to, d_from
+        items = storage.list_expenses_between(uid, d_from, d_to)
+        label = f"{storage.to_display(d_from)} – {storage.to_display(d_to)}"
+        name = f"расходы_{d_from}_{d_to}.xlsx"
+    else:
+        key = str(body.get("period", "30"))
+        label, days = export.PERIODS.get(key, export.PERIODS["30"])
+        items = storage.list_expenses(uid, days, today())
+        name = export.filename(key, today())
     data = await request.loop.run_in_executor(None, export.build_xlsx, items, label, today())
-    name = export.filename(key, today())
     if DEV_MODE or body.get("download"):
         return web.Response(body=data, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})

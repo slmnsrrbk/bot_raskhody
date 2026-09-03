@@ -217,6 +217,14 @@ def list_expenses(user_id: int, days=None, today: datetime.date = None, limit=No
         return [_row(r) for r in con.execute(q, params)]
 
 
+def list_expenses_between(user_id: int, date_from: str, date_to: str):
+    """Траты за диапазон дат включительно (ISO), новые первыми."""
+    with connect() as con:
+        return [_row(r) for r in con.execute(
+            "SELECT * FROM expenses WHERE user_id=? AND date >= ? AND date <= ? ORDER BY date DESC, id DESC",
+            (user_id, date_from, date_to))]
+
+
 def last_expense(user_id: int):
     """Последняя добавленная (по времени создания) трата пользователя."""
     with connect() as con:

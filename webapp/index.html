@@ -53,6 +53,30 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .opt{display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:48px;position:relative;width:100%;text-align:left;font-size:17px}
 .opt + .opt::before{content:"";position:absolute;left:16px;right:0;top:0;height:.5px;background:var(--sep)}
 .opt:active{background:var(--fill)}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:2px 0 12px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;padding:8px 13px;border-radius:999px;background:var(--field);font-size:14px;font-weight:500;color:var(--label);white-space:nowrap;border:1.5px solid transparent}
+.chip.sel{background:var(--blue);color:#fff}
+.cal{background:var(--field);border-radius:14px;padding:12px 10px 8px;margin-bottom:12px;user-select:none}
+.cal-h{display:flex;align-items:center;justify-content:space-between;padding:0 6px 8px}
+.cal-h b{font-size:17px;font-weight:600}
+.cal-h button{width:32px;height:32px;border-radius:50%;color:var(--blue);display:flex;align-items:center;justify-content:center}
+.cal-h button svg{width:10px;height:16px}
+.cal-h button:disabled{color:var(--label3)}
+.cal-g{display:grid;grid-template-columns:repeat(7,1fr);row-gap:4px}
+.cal-w{text-align:center;font-size:12px;font-weight:600;color:var(--label2);padding:4px 0 6px}
+.cal-d{height:40px;display:flex;align-items:center;justify-content:center;font-size:17px;position:relative;border-radius:0}
+.cal-d span{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative;z-index:1}
+.cal-d.mute{color:var(--label3)}
+.cal-d.dis{color:var(--label3);opacity:.5;pointer-events:none}
+.cal-d.today span{font-weight:700;color:var(--blue)}
+.cal-d.in{background:color-mix(in srgb,var(--blue) 15%,transparent)}
+.cal-d.start,.cal-d.end{background:color-mix(in srgb,var(--blue) 15%,transparent)}
+.cal-d.start{border-radius:20px 0 0 20px}.cal-d.end{border-radius:0 20px 20px 0}.cal-d.start.end{border-radius:20px}
+.cal-d.start span,.cal-d.end span{background:var(--blue);color:#fff;font-weight:600}
+.cal-d.in.mute,.cal-d.start.mute,.cal-d.end.mute{color:var(--label)}
+.range-lbl{text-align:center;font-size:15px;color:var(--label2);padding:0 0 10px}
+.range-lbl b{color:var(--label);font-weight:600}
 .spin{width:22px;height:22px;border:2.5px solid var(--fill2);border-top-color:var(--blue);border-radius:50%;animation:sp .8s linear infinite;margin:0 auto}
 @keyframes sp{to{transform:rotate(360deg)}}
 
@@ -179,7 +203,7 @@ button{background:none;border:0;padding:0;cursor:pointer}
 
 <div class="seg" id="seg">
   <div class="thumb" id="thumb"></div>
-  <button data-p="day">Сегодня</button><button data-p="week">Неделя</button><button data-p="month">Месяц</button><button data-p="all">Всё</button>
+  <button data-p="day">Сегодня</button><button data-p="week">Неделя</button><button data-p="month">Месяц</button><button data-p="custom" id="segCustom">Период</button>
 </div>
 
 <main id="app">
@@ -207,7 +231,10 @@ const catOf = c => CAT[c] || CAT["Другое"];
 const NBSP = " ";
 const fmt = n => Math.round(n).toLocaleString("ru-RU").replace(/\s/g, NBSP) + NBSP + "₽";
 const MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
-const state = { period: localStorage.getItem("period") || "day", filter: null, data: null, busy:false };
+const state = { period: localStorage.getItem("period") || "day", range: null, filter: null, data: null, busy:false };
+try { const r = JSON.parse(localStorage.getItem("range") || "null"); if (r && r.from && r.to) state.range = r; } catch(e){}
+if (state.period === "all") state.period = "custom", state.range = null;
+if (state.period === "custom" && !state.range) state.period = "day";
 
 /* ---------- Theme ---------- */
 function applyTheme(){
@@ -239,19 +266,40 @@ function dateLabel(iso, todayIso){
   if (diff === 0) return "Сегодня"; if (diff === 1) return "Вчера";
   return d.getDate() + " " + MONTHS[d.getMonth()] + (d.getFullYear() !== t.getFullYear() ? " " + d.getFullYear() : "");
 }
-const PERIOD_DAYS = { day:1, week:7, month:30, all:Infinity };
+const PERIOD_DAYS = { day:1, week:7, month:30 };
 function inWindow(item, todayIso, days, offset=0){
   if (!item.iso) return false;
   const diff = daysBetween(isoToDate(todayIso), isoToDate(item.iso)) - offset;
   return diff >= 0 && diff < days;
 }
+const addDays = (iso, n) => { const d = isoToDate(iso); d.setDate(d.getDate() + n); return toIso(d); };
+const toIso = d => d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+function currentRange(todayIso){
+  /* -> {from, to, prevFrom, prevTo} в ISO, включительно; null для «всё время» */
+  if (state.period === "custom") {
+    if (!state.range) return null;
+    const len = daysBetween(isoToDate(state.range.to), isoToDate(state.range.from)) + 1;
+    return { from: state.range.from, to: state.range.to, prevFrom: addDays(state.range.from, -len), prevTo: addDays(state.range.from, -1) };
+  }
+  const days = PERIOD_DAYS[state.period];
+  return { from: addDays(todayIso, -(days-1)), to: todayIso, prevFrom: addDays(todayIso, -(2*days-1)), prevTo: addDays(todayIso, -days) };
+}
+const inRange = (item, from, to) => !!item.iso && item.iso >= from && item.iso <= to;
+const SHORT = ["янв","фев","мар","апр","мая","июн","июл","авг","сен","окт","ноя","дек"];
+function rangeLabel(from, to){
+  const a = isoToDate(from), b = isoToDate(to);
+  if (from === to) return a.getDate() + " " + MONTHS[a.getMonth()];
+  const y = a.getFullYear() !== b.getFullYear();
+  if (!y && a.getMonth() === b.getMonth()) return `${a.getDate()}–${b.getDate()} ${SHORT[a.getMonth()]}`;
+  return `${a.getDate()} ${SHORT[a.getMonth()]}${y?" "+a.getFullYear():""} – ${b.getDate()} ${SHORT[b.getMonth()]}${y?" "+b.getFullYear():""}`;
+}
 
 /* ---------- Render ---------- */
 function render(){
   const d = state.data; if (!d) return;
-  const days = PERIOD_DAYS[state.period];
-  const cur = d.expenses.filter(x => inWindow(x, d.today, days));
-  const prev = days === Infinity ? [] : d.expenses.filter(x => inWindow(x, d.today, days, days));
+  const R = currentRange(d.today);
+  const cur = R ? d.expenses.filter(x => inRange(x, R.from, R.to)) : d.expenses.filter(x => !!x.iso);
+  const prev = R ? d.expenses.filter(x => inRange(x, R.prevFrom, R.prevTo)) : [];
   const total = cur.reduce((s,x)=>s+x.amount,0);
   const prevTotal = prev.reduce((s,x)=>s+x.amount,0);
 
@@ -261,13 +309,15 @@ function render(){
 
   const t = isoToDate(d.today);
   document.getElementById("subtitle").textContent =
-    { day: t.getDate()+" "+MONTHS[t.getMonth()], week:"последние 7 дней", month:"последние 30 дней", all:"за всё время" }[state.period];
+    state.period === "custom" ? (R ? rangeLabel(R.from, R.to) : "за всё время")
+    : { day: t.getDate()+" "+MONTHS[t.getMonth()], week:"последние 7 дней", month:"последние 30 дней" }[state.period];
+  document.getElementById("segCustom").textContent = state.period === "custom" ? (R ? rangeLabel(R.from, R.to) : "Всё время") : "Период";
 
   let html = "";
 
   /* hero */
   let delta = "";
-  if (days !== Infinity && prevTotal > 0) {
+  if (R && prevTotal > 0) {
     const p = Math.round((total - prevTotal) / prevTotal * 100);
     const down = p <= 0;
     delta = `<div class="delta ${down?"down":"up"}"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${down?'<path d="M6 2v8M2 6l4 4 4-4"/>':'<path d="M6 10V2M2 6l4-4 4 4"/>'}</svg>${Math.abs(p)}% к прошлому периоду</div>`;
@@ -327,14 +377,14 @@ const plural = (n,a,b,c) => { n=Math.abs(n)%100; const m=n%10; return n>10&&n<20
 const seg = document.getElementById("seg");
 function setPeriod(p, animate=true){
   state.period = p; localStorage.setItem("period", p);
-  const idx = ["day","week","month","all"].indexOf(p);
+  const idx = ["day","week","month","custom"].indexOf(p);
   const th = document.getElementById("thumb");
   if (!animate) th.style.transition = "none";
   th.style.transform = `translateX(${idx*100}%)`;
   if (!animate) requestAnimationFrame(()=>th.style.transition="");
   render();
 }
-seg.addEventListener("click", e => { const b = e.target.closest("button[data-p]"); if (b){ haptic("light"); setPeriod(b.dataset.p); } });
+seg.addEventListener("click", e => { const b = e.target.closest("button[data-p]"); if (!b) return; haptic("light"); if (b.dataset.p === "custom") openPeriod(); else setPeriod(b.dataset.p); });
 setPeriod(state.period, false);
 
 /* ---------- Clicks ---------- */
@@ -485,17 +535,93 @@ function showReceipt(rc){
   render();
 }
 
+/* ---------- Произвольный период: пресеты + календарь ---------- */
+function presets(todayIso){
+  const t = isoToDate(todayIso), y = t.getFullYear(), m = t.getMonth();
+  const first = (yy, mm) => toIso(new Date(yy, mm, 1)), last = (yy, mm) => toIso(new Date(yy, mm + 1, 0));
+  return [
+    ["Вчера", addDays(todayIso,-1), addDays(todayIso,-1)],
+    ["Этот месяц", first(y, m), todayIso],
+    ["Прошлый месяц", first(y, m-1), last(y, m-1)],
+    ["3 месяца", addDays(todayIso,-89), todayIso],
+    ["Этот год", first(y, 0), todayIso],
+    ["Всё время", null, null],
+  ];
+}
+function openPeriod(){
+  const todayIso = state.data ? state.data.today : toIso(new Date());
+  let from = state.range ? state.range.from : null, to = state.range ? state.range.to : null;
+  let view = isoToDate(to || todayIso); view = new Date(view.getFullYear(), view.getMonth(), 1);
+  const html = () => {
+    const pr = presets(todayIso);
+    return `<div class="grab"></div>
+      <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Период</h2><button type="button" class="primary" id="apply">Готово</button></div>
+      <div class="chips">${pr.map(([l,f,t],i) => `<button type="button" class="chip ${f===from&&t===to?"sel":""}" data-i="${i}">${l}</button>`).join("")}</div>
+      <div class="range-lbl" id="rangeLbl"></div>
+      <div class="cal" id="cal"></div>
+      <div class="hint">Нажмите на дату начала, затем на дату конца. Один и тот же день — за один день.</div>`;
+  };
+  const drawCal = () => {
+    const y = view.getFullYear(), m = view.getMonth();
+    const firstDow = (new Date(y, m, 1).getDay() + 6) % 7;   // понедельник = 0
+    const daysIn = new Date(y, m+1, 0).getDate(), prevDays = new Date(y, m, 0).getDate();
+    let cells = "";
+    for (let i = 0; i < 42; i++) {
+      let day, mm = m, yy = y, mute = false;
+      if (i < firstDow) { day = prevDays - firstDow + 1 + i; mm = m-1; mute = true; }
+      else if (i - firstDow < daysIn) day = i - firstDow + 1;
+      else { day = i - firstDow - daysIn + 1; mm = m+1; mute = true; }
+      const iso = toIso(new Date(yy, mm, day));
+      const cls = ["cal-d", mute?"mute":"", iso===todayIso?"today":"", iso>todayIso?"dis":"",
+        from&&to&&iso>from&&iso<to?"in":"", iso===from?"start":"", iso===to?"end":""].join(" ");
+      cells += `<button type="button" class="${cls}" data-d="${iso}"><span>${day}</span></button>`;
+    }
+    const next = new Date(y, m+1, 1) > isoToDate(todayIso);
+    document.getElementById("cal").innerHTML = `<div class="cal-h">
+      <button type="button" id="calPrev"><svg viewBox="0 0 10 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2L2 8l6 6"/></svg></button>
+      <b>${MONTHS[m][0].toUpperCase()+MONTHS[m].slice(1).replace(/я$/,"ь").replace(/а$/,"")} ${y}</b>
+      <button type="button" id="calNext" ${next?"disabled":""}><svg viewBox="0 0 10 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 2l6 6-6 6"/></svg></button></div>
+      <div class="cal-g">${["Пн","Вт","Ср","Чт","Пт","Сб","Вс"].map(w=>`<div class="cal-w">${w}</div>`).join("")}${cells}</div>`;
+    document.getElementById("rangeLbl").innerHTML = from && to ? `<b>${rangeLabel(from,to)}</b> · ${daysBetween(isoToDate(to),isoToDate(from))+1} ${plural(daysBetween(isoToDate(to),isoToDate(from))+1,"день","дня","дней")}`
+      : from ? `Начало: <b>${rangeLabel(from,from)}</b> — выберите конец` : "Всё время";
+    sheet.querySelectorAll(".chip").forEach(c => { const [,f,t] = presets(todayIso)[Number(c.dataset.i)]; c.classList.toggle("sel", f===from && t===to); });
+    document.getElementById("calPrev").onclick = () => { view = new Date(view.getFullYear(), view.getMonth()-1, 1); drawCal(); };
+    document.getElementById("calNext").onclick = () => { view = new Date(view.getFullYear(), view.getMonth()+1, 1); drawCal(); };
+    document.getElementById("cal").querySelectorAll(".cal-d").forEach(b => b.onclick = () => {
+      haptic("light"); const d = b.dataset.d;
+      if (!from || (from && to)) { from = d; to = null; }
+      else if (d < from) { to = from; from = d; }
+      else to = d;
+      drawCal();
+    });
+  };
+  openSheet(html(), () => {
+    drawCal();
+    document.getElementById("cancel").onclick = closeSheet;
+    sheet.querySelectorAll(".chip").forEach(c => c.onclick = () => { haptic("light"); const [,f,t] = presets(todayIso)[Number(c.dataset.i)]; from = f; to = t; if (t) view = new Date(isoToDate(t).getFullYear(), isoToDate(t).getMonth(), 1); drawCal(); });
+    document.getElementById("apply").onclick = () => {
+      if (from && !to) to = from;
+      state.range = from ? {from, to} : null;
+      localStorage.setItem("range", JSON.stringify(state.range));
+      closeSheet(); setPeriod("custom");
+    };
+  });
+}
+
 /* ---------- Выгрузка ---------- */
 const PERIODS = [["7","Неделя"],["30","Месяц"],["90","3 месяца"],["365","Год"],["all","Всё время"]];
 function openExport(){
+  const R = state.data ? currentRange(state.data.today) : null;
+  const custom = state.period === "custom" && R ? [["custom", "Выбранный период: " + rangeLabel(R.from, R.to)]] : [];
   openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Выгрузка в Excel</h2><span></span></div>
     <div class="hint">Файл придёт в чат с ботом</div>
-    <div class="fields">${PERIODS.map(([k,l]) => `<button type="button" class="opt" data-k="${k}"><span>${l}</span><svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg></button>`).join("")}</div>`, () => {
+    <div class="fields">${custom.concat(PERIODS).map(([k,l]) => `<button type="button" class="opt" data-k="${k}"><span>${l}</span><svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg></button>`).join("")}</div>`, () => {
     document.getElementById("cancel").onclick = closeSheet;
     sheet.querySelectorAll(".opt").forEach(b => b.onclick = async () => {
       if (state.busy) return;
       try { state.busy = true; haptic("light"); toast("Готовлю файл…");
-        const res = await api("/api/export", {method:"POST", body: JSON.stringify({period: b.dataset.k})});
+        const payload = b.dataset.k === "custom" ? {from: R.from, to: R.to} : {period: b.dataset.k};
+        const res = await api("/api/export", {method:"POST", body: JSON.stringify(payload)});
         haptic("ok"); closeSheet(); toast(`Отправлено в чат: ${res.count} ${plural(res.count,"запись","записи","записей")}`);
       } catch(e){ haptic("err"); toast(e.message); } finally { state.busy = false; }
     });
