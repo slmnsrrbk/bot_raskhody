@@ -10,6 +10,10 @@ from openpyxl.utils import get_column_letter
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 PERIODS = OrderedDict([("7", ("Неделя", 7)), ("30", ("Месяц", 30)), ("90", ("3 месяца", 90)), ("365", ("Год", 365)), ("all", ("Всё время", None))])
 MONEY = '#,##0 "₽"'
+
+
+def money_format(symbol: str = "₽") -> str:
+    return '#,##0 "' + str(symbol).replace('"', "") + '"'
 HEAD_FILL = PatternFill("solid", fgColor="F2F2F7")
 
 
@@ -27,8 +31,9 @@ def _autosize(ws, widths):
         ws.column_dimensions[get_column_letter(i)].width = w
 
 
-def build_xlsx(items, period_label: str, today: datetime.date) -> bytes:
-    """items — список записей storage.list_expenses (новые первыми)."""
+def build_xlsx(items, period_label: str, today: datetime.date, symbol: str = "₽") -> bytes:
+    """items — список записей storage.list_expenses (новые первыми); symbol — валюта пользователя."""
+    MONEY = money_format(symbol)  # noqa: N806 — локальный формат для этой книги
     wb = Workbook()
     ws = wb.active
     ws.title = "Расходы"

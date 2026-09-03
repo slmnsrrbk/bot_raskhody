@@ -23,6 +23,7 @@ import ai
 import export
 import receipt
 import storage
+import currencies
 
 BASE_DIR = Path(__file__).resolve().parent
 try:
@@ -167,7 +168,19 @@ async def api_state(request: web.Request):
         "limits": storage.get_limits(uid),
         "expenses": storage.list_expenses(uid),
         "user": {"id": uid, "first_name": request["user"].get("first_name", ""), "is_admin": is_admin(uid, request["user"].get("username"))},
+        "settings": storage.get_settings(uid),
+        "currencies": currencies.as_list(),
     })
+
+
+async def api_settings(request: web.Request):
+    uid = request["user_id"]
+    body = await request.json()
+    try:
+        out = storage.set_settings(uid, currency=body.get("currency"), favorites=body.get("favorites"))
+    except ValueError as e:
+        raise _error(web.HTTPBadRequest, str(e))
+    return web.json_response(out)
 
 
 # --- админка владельца: только метаданные, содержимое трат остаётся зашифрованным ---
@@ -353,7 +366,7 @@ async def api_export(request: web.Request):
         label, days = export.PERIODS.get(key, export.PERIODS["30"])
         items = storage.list_expenses(uid, days, today())
         name = export.filename(key, today())
-    data = await asyncio.get_running_loop().run_in_executor(None, export.build_xlsx, items, label, today())
+    data = await asyncio.get_running_loop().run_in_executor(None, export.build_xlsx, items, label, today(), storage.currency_symbol(uid))
     if DEV_MODE or body.get("download"):
         return web.Response(body=data, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
@@ -386,6 +399,7 @@ def make_app() -> web.Application:
     app.router.add_put(r"/api/expenses/{id:\d+}", api_update)
     app.router.add_delete(r"/api/expenses/{id:\d+}", api_delete)
     app.router.add_put("/api/limits", api_limits)
+    app.router.add_put("/api/settings", api_settings)
     app.router.add_post("/api/expenses/bulk", api_bulk)
     app.router.add_post("/api/categories", api_categories_add)
     app.router.add_delete("/api/categories/{name}", api_categories_delete)

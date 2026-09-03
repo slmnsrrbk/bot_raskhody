@@ -126,6 +126,28 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .fsum{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 4px 10px;font-size:13px;color:var(--label2)}
 .fsum .tag{background:var(--fill);border-radius:999px;padding:4px 10px;color:var(--label);font-weight:500}
 .fsum button{color:var(--blue);font-size:13px;font-weight:500}
+.srow{display:flex;align-items:center;gap:12px;padding:0 16px;height:52px;position:relative;width:100%;text-align:left;font-size:17px}
+.srow + .srow::before{content:"";position:absolute;left:56px;right:0;top:0;height:.5px;background:var(--sep)}
+.srow:active{background:var(--fill)}
+.srow .ico{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;flex:none}
+.srow .ico svg{width:18px;height:18px}
+.srow .val{margin-left:auto;color:var(--label2);font-size:16px;white-space:nowrap}
+.srow .chev{width:8px;height:14px;color:var(--label3);flex:none;margin-left:auto}
+.srow .val + .chev{margin-left:0}
+.crow{display:flex;align-items:center;gap:12px;padding:0 12px 0 8px;height:50px;position:relative;width:100%;text-align:left}
+.crow + .crow::before{content:"";position:absolute;left:52px;right:0;top:0;height:.5px;background:var(--sep)}
+.crow:active{background:var(--fill)}
+.crow .star{width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:var(--label3);flex:none}
+.crow .star.on{color:var(--orange)}
+.crow .star svg{width:20px;height:20px}
+.crow .code{width:44px;font-size:15px;font-weight:600;color:var(--label2);flex:none;letter-spacing:.02em}
+.crow .cname{flex:1;min-width:0;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.crow .sym{font-size:14px;color:var(--label2);margin-left:6px}
+.crow .chk{width:22px;height:22px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.crow .chk svg{width:12px;height:12px}
+.search{display:flex;align-items:center;gap:8px;background:var(--field);border-radius:10px;padding:0 12px;height:38px;margin-bottom:14px}
+.search svg{width:16px;height:16px;color:var(--label3);flex:none}
+.search input{flex:1;border:0;background:transparent;outline:none;font-size:16px;color:var(--label);min-width:0}
 .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px}
 .stat{background:var(--field);border-radius:12px;padding:12px 14px}
 .stat b{display:block;font-size:24px;font-weight:700;letter-spacing:-.02em}
@@ -259,11 +281,8 @@ button{background:none;border:0;padding:0;cursor:pointer}
     <div class="subtitle" id="subtitle">&nbsp;</div>
   </div>
   <div class="hbtns">
-    <button class="addbtn scan" id="adminTop" aria-label="Админка" hidden>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6z"/><path d="M9.5 12l2 2 3.5-4"/></svg>
-    </button>
-    <button class="addbtn scan" id="limitTop" aria-label="Лимиты">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5A8.5 8.5 0 1 1 19.5 16.5"/><path d="M12 13l3.5-4"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/></svg>
+    <button class="addbtn scan" id="settingsTop" aria-label="Настройки">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
     </button>
     <button class="addbtn scan" id="scanTop" aria-label="Сканировать чек">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><rect x="8" y="8" width="8" height="8" rx="1.5"/></svg>
@@ -309,7 +328,9 @@ const EXTRA_COLORS = ["#FF6B6B","#4ECDC4","#FFB703","#8338EC","#3A86FF","#FB5607
 const catOf = c => CAT[c] || { e:"🏷️", c: EXTRA_COLORS[[...String(c)].reduce((a,ch)=>a+ch.charCodeAt(0),0) % EXTRA_COLORS.length], hex: EXTRA_COLORS[[...String(c)].reduce((a,ch)=>a+ch.charCodeAt(0),0) % EXTRA_COLORS.length] };
 const allCats = () => (state.data && state.data.categories) || Object.keys(CAT);
 const NBSP = " ";
-const fmt = n => Math.round(n).toLocaleString("ru-RU").replace(/\s/g, NBSP) + NBSP + "₽";
+const curSym = () => (state.data && state.data.settings && state.data.settings.symbol) || "₽";
+const curName = () => { const d = state.data; if (!d || !d.settings) return "рублей"; const c = (d.currencies || []).find(x => x.code === d.settings.currency); return c ? (c.symbol || c.code) + " · " + c.name : d.settings.currency; };
+const fmt = n => Math.round(n).toLocaleString("ru-RU").replace(/\s/g, NBSP) + NBSP + curSym();
 const MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
 const state = { period: "day", range: null, filter: null, data: null, busy:false, pinned:false, shown:0, ignoreUntil:0 };
 
@@ -588,8 +609,7 @@ document.getElementById("app").addEventListener("click", e => {
   else if (b.dataset.id !== undefined) { haptic("light"); openEdit(Number(b.dataset.id)); }
 });
 document.getElementById("addTop").addEventListener("click", () => { haptic("medium"); openAdd(); });
-document.getElementById("limitTop").addEventListener("click", () => { haptic("light"); openLimits(); });
-document.getElementById("adminTop").addEventListener("click", () => { haptic("light"); openAdmin(); });
+document.getElementById("settingsTop").addEventListener("click", () => { haptic("light"); openSettings(); });
 document.getElementById("mainbtn").addEventListener("click", () => openAdd());
 
 /* ---------- Свайп по строке ---------- */
@@ -709,7 +729,7 @@ function formHtml(title, item){
   const today = state.data.today;
   return `<div class="grab"></div>
   <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>${title}</h2><button type="button" class="primary" id="save">Готово</button></div>
-  <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${item?item.amount:""}" autocomplete="off" ${item?"":"autofocus"}><div class="cur">рублей</div></div>
+  <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${item?item.amount:""}" autocomplete="off" ${item?"":"autofocus"}><div class="cur">${curName()}</div></div>
   <div class="name-field"><input id="name" enterkeyhint="done" placeholder="Название: кофе, такси…" value="${item?esc(item.name):""}" autocomplete="off" autocapitalize="sentences"></div>
   <div class="fields">
     <div class="field"><label>Дата</label><input id="date" type="date" value="${item?item.iso:today}" max="${today}"></div>
@@ -864,7 +884,7 @@ function showReceipt(rc){
     const it = items[i];
     sheet.innerHTML = `<div class="grab"></div>
       <div class="sheet-h"><button type="button" id="back">Назад</button><h2>Позиция</h2><button type="button" class="primary" id="ok">Готово</button></div>
-      <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${it.amount}" autocomplete="off"><div class="cur">рублей</div></div>
+      <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${it.amount}" autocomplete="off"><div class="cur">${curName()}</div></div>
       <div class="name-field"><input id="name" enterkeyhint="done" placeholder="Название" value="${esc(it.name)}" autocomplete="off" autocapitalize="sentences"></div>
       <div class="fields"><div class="field"><label>Дата</label><input id="date" type="date" value="${it.date}" max="${today}"></div></div>
       <div class="hint">Категория</div>${catPicker(it.category)}
@@ -883,6 +903,58 @@ function showReceipt(rc){
     document.getElementById("rm").onclick = () => { haptic("medium"); items.splice(i,1); render(); };
   };
   render();
+}
+
+/* ---------- Настройки ---------- */
+const CHEV = `<svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg>`;
+function openSettings(){
+  const d = state.data, st = d.settings || {}, cur = (d.currencies || []).find(c => c.code === st.currency);
+  const L = d.limits || {}, lim = ["daily","weekly","monthly"].filter(k => L[k]).length;
+  const ic = (bg, path) => `<div class="ico" style="background:${bg}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg></div>`;
+  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>Настройки</h2><span></span></div>
+    <div class="card" style="margin-bottom:18px">
+      <button type="button" class="srow" id="sCur">${ic("var(--green)", '<circle cx="12" cy="12" r="9"/><path d="M9 9.5h4.5a2.25 2.25 0 0 1 0 4.5H9M9 8v8M8 14h3"/>')}<span>Основная валюта</span><span class="val">${cur ? esc(cur.code + " · " + (cur.symbol || "")) : esc(st.currency || "RUB")}</span>${CHEV}</button>
+      <button type="button" class="srow" id="sLim">${ic("var(--orange)", '<path d="M4.5 16.5A8.5 8.5 0 1 1 19.5 16.5"/><path d="M12 13l3.5-4"/>')}<span>Лимиты</span><span class="val">${lim ? lim + " " + plural(lim,"лимит","лимита","лимитов") : "не заданы"}</span>${CHEV}</button>
+      ${d.user && d.user.is_admin ? `<button type="button" class="srow" id="sAdm">${ic("var(--purple)", '<path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6z"/><path d="M9.5 12l2 2 3.5-4"/>')}<span>Админка</span>${CHEV}</button>` : ""}
+    </div>
+    <div class="hint">Валюта влияет на отображение сумм в приложении, боте и выгрузке. Пересчёта курсов нет: суммы хранятся как введены.</div>`, () => {
+    document.getElementById("cancel").onclick = closeSheet;
+    document.getElementById("sCur").onclick = () => { haptic("light"); openCurrency(); };
+    document.getElementById("sLim").onclick = () => { haptic("light"); openLimits(); };
+    const a = document.getElementById("sAdm"); if (a) a.onclick = () => { haptic("light"); openAdmin(); };
+  });
+}
+function openCurrency(){
+  const d = state.data; let st = d.settings, q = "";
+  const STAR = `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1.1 5.9L12 16.9l-5.3 2.8 1.1-5.9-4.3-4.1 5.9-.8z"/></svg>`;
+  const STAR_O = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1.1 5.9L12 16.9l-5.3 2.8 1.1-5.9-4.3-4.1 5.9-.8z"/></svg>`;
+  const row = c => { const fav = st.favorites.includes(c.code), sel = c.code === st.currency;
+    return `<div class="crow" data-c="${c.code}"><button type="button" class="star ${fav?"on":""}" data-fav="${c.code}" aria-label="В избранное">${fav ? STAR : STAR_O}</button><span class="code">${c.code}</span><span class="cname">${esc(c.name)}${c.symbol ? `<span class="sym">${esc(c.symbol)}</span>` : ""}</span>${sel ? `<span class="chk"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6.5l2.6 2.5L10 3.5"/></svg></span>` : ""}</div>`; };
+  const draw = () => {
+    const all = d.currencies || [];
+    const match = c => !q || (c.code + " " + c.name + " " + c.symbol).toLowerCase().includes(q);
+    const favs = all.filter(c => st.favorites.includes(c.code) && match(c)), rest = all.filter(c => !st.favorites.includes(c.code) && match(c));
+    const list = document.getElementById("clist");
+    list.innerHTML = `${favs.length ? `<div class="hint" style="padding-left:4px">Избранные</div><div class="card" style="margin-bottom:18px">${favs.map(row).join("")}</div>` : ""}
+      ${rest.length ? `<div class="hint" style="padding-left:4px">Все валюты</div><div class="card">${rest.map(row).join("")}</div>` : ""}
+      ${!favs.length && !rest.length ? `<div class="card"><div class="empty">Ничего не найдено</div></div>` : ""}`;
+  };
+  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="back">Назад</button><h2>Основная валюта</h2><span></span></div>
+    <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="cq" placeholder="Поиск" autocomplete="off" autocorrect="off"></div>
+    <div id="clist"></div>
+    <div class="hint" style="padding-top:12px">Звёздочка добавляет валюту в избранное. Выбранная валюта отмечена галочкой.</div>`, () => {
+    draw();
+    document.getElementById("back").onclick = () => openSettings();
+    document.getElementById("cq").addEventListener("input", e => { q = e.target.value.trim().toLowerCase(); draw(); });
+    document.getElementById("clist").addEventListener("click", async e => {
+      const star = e.target.closest("[data-fav]");
+      if (star) { haptic("light"); const c = star.dataset.fav; const favs = st.favorites.includes(c) ? st.favorites.filter(x => x !== c) : st.favorites.concat([c]);
+        try { st = d.settings = await api("/api/settings", {method:"PUT", body: JSON.stringify({favorites: favs})}); draw(); } catch(err){ haptic("err"); toast(err.message); } return; }
+      const r = e.target.closest(".crow"); if (!r) return; haptic("light");
+      try { st = d.settings = await api("/api/settings", {method:"PUT", body: JSON.stringify({currency: r.dataset.c})}); draw(); haptic("ok"); toast("Валюта: " + st.currency); render(); }
+      catch(err){ haptic("err"); toast(err.message); }
+    });
+  });
 }
 
 /* ---------- Админка владельца ---------- */
@@ -1127,7 +1199,7 @@ let toastT; function toast(m){ const t = document.getElementById("toast"); t.cla
 
 /* ---------- Load ---------- */
 async function load(first=true){
-  try { state.data = await api("/api/state"); render(); document.getElementById("adminTop").hidden = !(state.data.user && state.data.user.is_admin); if (first) showMain(); }
+  try { state.data = await api("/api/state"); render(); if (first) showMain(); }
   catch(e){
     document.getElementById("app").innerHTML = `<section class="section"><div class="card"><div class="empty"><div class="big">🔒</div>${esc(e.message)}</div></div></section>`;
   }

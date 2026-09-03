@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import datetime
 import functools
 import io
@@ -66,8 +67,19 @@ def today() -> datetime.date:
     return datetime.datetime.now(TZ).date()
 
 
+CUR_SYMBOL = contextvars.ContextVar("cur_symbol", default="₽")   # валюта текущего пользователя
+
+
+def use_currency(user_id: int):
+    """Запоминает валюту пользователя для fmt() в рамках текущего апдейта."""
+    try:
+        CUR_SYMBOL.set(storage.currency_symbol(user_id))
+    except Exception:  # noqa: BLE001
+        CUR_SYMBOL.set("₽")
+
+
 def fmt(n) -> str:
-    return f"{int(n):,}".replace(",", " ") + " ₽"
+    return f"{int(n):,}".replace(",", " ") + " " + CUR_SYMBOL.get()
 
 
 detect_category = ai.detect_category
@@ -164,6 +176,7 @@ def register(update: Update) -> int:
     if not storage.is_owner(u.id, u.username) and storage.is_blocked(u.id):
         raise PermissionError
     storage.upsert_user(u.id, u.first_name or "", u.username or "", today())
+    use_currency(u.id)
     if storage.legacy_pending():
         owner = storage.owner_id() or OWNER_ID or u.id
         n = storage.migrate_legacy(owner)
@@ -589,7 +602,7 @@ async def ask_export(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id
 async def send_export(bot, user_id: int, period_key: str):
     label, days = export.PERIODS.get(period_key, ("Всё время", None))
     items = storage.list_expenses(user_id, days, today())
-    data = await in_thread(export.build_xlsx, items, label, today())
+    data = await in_thread(export.build_xlsx, items, label, today(), storage.currency_symbol(user_id))
     await bot.send_document(
         chat_id=user_id,
         document=io.BytesIO(data),
@@ -694,6 +707,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 async def _broadcast(app: Application, days: int, title: str, with_advice=False):
     for user_id in storage.users_with_expenses(days, today()):
         try:
+            use_currency(user_id)
             report, total, _ = build_report(user_id, days)
             if with_advice and total:
                 advice = await in_thread(generate_advice, report)

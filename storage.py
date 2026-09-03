@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import crypto
+import currencies
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = Path(os.getenv("DB_FILE", str(BASE_DIR / "data.db")))
@@ -35,7 +36,9 @@ CREATE TABLE IF NOT EXISTS users (
     username    TEXT,
     created_at  TEXT NOT NULL,
     last_seen   TEXT NOT NULL,
-    blocked     INTEGER NOT NULL DEFAULT 0
+    blocked     INTEGER NOT NULL DEFAULT 0,
+    currency    TEXT,
+    favorites   TEXT
 );
 CREATE TABLE IF NOT EXISTS user_days (
     user_id     INTEGER NOT NULL,
@@ -103,6 +106,9 @@ def init_db():
         ucols = {r[1] for r in con.execute("PRAGMA table_info(users)").fetchall()}
         if "blocked" not in ucols:
             con.execute("ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
+        if "currency" not in ucols:
+            con.execute("ALTER TABLE users ADD COLUMN currency TEXT")
+            con.execute("ALTER TABLE users ADD COLUMN favorites TEXT")
         # Записи, зашифрованные другой схемой (другим ключом), прочитать нельзя — удаляем.
         pat = crypto.PREFIX + "%"
         n = con.execute("DELETE FROM expenses WHERE name LIKE 'enc%' AND name NOT LIKE ?", (pat,)).rowcount
@@ -448,6 +454,50 @@ def users_with_expenses(days: int, today: datetime.date = None):
         return [r["user_id"] for r in con.execute(
             "SELECT DISTINCT user_id FROM expenses WHERE date > ? AND date <= ?",
             ((today - datetime.timedelta(days=days)).isoformat(), today.isoformat()))]
+
+
+# ---------------------------------------------------------------------------
+# Настройки пользователя: основная валюта и избранные валюты
+# ---------------------------------------------------------------------------
+def get_settings(user_id: int) -> dict:
+    with connect() as con:
+        r = con.execute("SELECT currency, favorites FROM users WHERE id=?", (user_id,)).fetchone()
+    cur = (r["currency"] if r and r["currency"] else currencies.DEFAULT).upper()
+    if not currencies.is_valid(cur):
+        cur = currencies.DEFAULT
+    fav = None
+    if r and r["favorites"]:
+        try:
+            fav = [c for c in json.loads(r["favorites"]) if currencies.is_valid(c)]
+        except ValueError:
+            fav = None
+    if fav is None:
+        fav = list(currencies.DEFAULT_FAVORITES)
+    return {"currency": cur, "symbol": currencies.symbol(cur), "favorites": fav}
+
+
+def set_settings(user_id: int, currency: str = None, favorites=None) -> dict:
+    fields, values = [], []
+    if currency is not None:
+        currency = str(currency).upper()
+        if not currencies.is_valid(currency):
+            raise ValueError("Неизвестная валюта")
+        fields.append("currency=?"); values.append(currency)
+    if favorites is not None:
+        clean = []
+        for c in favorites:
+            c = str(c).upper()
+            if currencies.is_valid(c) and c not in clean:
+                clean.append(c)
+        fields.append("favorites=?"); values.append(json.dumps(clean[:30]))
+    if fields:
+        with connect() as con:
+            con.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=?", (*values, user_id))
+    return get_settings(user_id)
+
+
+def currency_symbol(user_id: int) -> str:
+    return get_settings(user_id)["symbol"]
 
 
 # ---------------------------------------------------------------------------
