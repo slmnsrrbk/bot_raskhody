@@ -94,11 +94,16 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .spin{width:22px;height:22px;border:2.5px solid var(--fill2);border-top-color:var(--blue);border-radius:50%;animation:sp .8s linear infinite;margin:0 auto}
 @keyframes sp{to{transform:rotate(360deg)}}
 
-/* ---- Segmented control ---- */
-.seg{margin:4px 0 14px;background:var(--tab-bg);border-radius:9px;padding:2px;display:grid;grid-template-columns:repeat(4,1fr);position:relative}
-.seg button{position:relative;z-index:1;height:32px;border-radius:7px;font-size:13px;font-weight:600;color:var(--label);transition:color .2s}
-.seg .thumb{position:absolute;top:2px;left:2px;height:32px;width:calc(25% - 1px);background:var(--tab-active);border-radius:7px;
-  box-shadow:0 3px 8px rgba(0,0,0,.12),0 3px 1px rgba(0,0,0,.04);transition:transform .25s cubic-bezier(.2,.8,.2,1)}
+/* ---- Period filter (pills, like a bank app) ---- */
+.pf{display:flex;gap:8px;overflow-x:auto;padding:6px 16px 14px;scrollbar-width:none;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity}
+.pf::-webkit-scrollbar{display:none}
+.pf button{flex:none;height:34px;padding:0 14px;border-radius:17px;background:var(--fill);font-size:14px;font-weight:600;color:var(--label);white-space:nowrap;
+  display:flex;align-items:center;gap:6px;scroll-snap-align:start;transition:background .15s,color .15s,transform .1s}
+.pf button:active{transform:scale(.96)}
+.pf button.on{background:var(--label);color:var(--bg)}
+.pf button svg{width:15px;height:15px}
+.sheet .pf{padding-left:0;padding-right:0;margin-top:2px}
+.linkbtn{color:var(--blue);font-size:15px;font-weight:500;padding:6px 10px}
 
 /* ---- Cards ---- */
 .section{margin:0 16px 22px}
@@ -265,7 +270,7 @@ const allCats = () => (state.data && state.data.categories) || Object.keys(CAT);
 const NBSP = " ";
 const fmt = n => Math.round(n).toLocaleString("ru-RU").replace(/\s/g, NBSP) + NBSP + "₽";
 const MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
-const state = { period: "day", range: null, filter: null, data: null, busy:false };
+const state = { period: "day", range: null, filter: null, data: null, busy:false, earlier:false, days:0 };
 
 /* ---------- Theme ---------- */
 function applyTheme(){
@@ -305,15 +310,27 @@ function inWindow(item, todayIso, days, offset=0){
 }
 const addDays = (iso, n) => { const d = isoToDate(iso); d.setDate(d.getDate() + n); return toIso(d); };
 const toIso = d => d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+const firstOf = (y, m) => toIso(new Date(y, m, 1)), lastOf = (y, m) => toIso(new Date(y, m + 1, 0));
+/* Готовые периоды — как фильтры в банковском приложении. [ключ, подпись, диапазон(today) -> [from,to] | null] */
+const PRESETS = [
+  ["day",       "Сегодня",        t => [t, t]],
+  ["yesterday", "Вчера",          t => [addDays(t,-1), addDays(t,-1)]],
+  ["week",      "Неделя",         t => [addDays(t,-6), t]],
+  ["month",     "Месяц",          t => [addDays(t,-29), t]],
+  ["thisMonth", "Этот месяц",     t => { const d = isoToDate(t); return [firstOf(d.getFullYear(), d.getMonth()), t]; }],
+  ["lastMonth", "Прошлый месяц",  t => { const d = isoToDate(t); return [firstOf(d.getFullYear(), d.getMonth()-1), lastOf(d.getFullYear(), d.getMonth()-1)]; }],
+  ["year",      "Год",            t => { const d = isoToDate(t); return [firstOf(d.getFullYear(), 0), t]; }],
+  ["all",       "Всё время",      () => null],
+];
+const presetOf = k => PRESETS.find(p => p[0] === k);
 function currentRange(todayIso){
   /* -> {from, to, prevFrom, prevTo} в ISO, включительно; null для «всё время» */
-  if (state.period === "custom") {
-    if (!state.range) return null;
-    const len = daysBetween(isoToDate(state.range.to), isoToDate(state.range.from)) + 1;
-    return { from: state.range.from, to: state.range.to, prevFrom: addDays(state.range.from, -len), prevTo: addDays(state.range.from, -1) };
-  }
-  const days = PERIOD_DAYS[state.period];
-  return { from: addDays(todayIso, -(days-1)), to: todayIso, prevFrom: addDays(todayIso, -(2*days-1)), prevTo: addDays(todayIso, -days) };
+  let ft;
+  if (state.period === "custom") { if (!state.range) return null; ft = [state.range.from, state.range.to]; }
+  else { const p = presetOf(state.period) || PRESETS[0]; ft = p[2](todayIso); if (!ft) return null; }
+  const [from, to] = ft;
+  const len = daysBetween(isoToDate(to), isoToDate(from)) + 1;
+  return { from, to, prevFrom: addDays(from, -len), prevTo: addDays(from, -1) };
 }
 const inRange = (item, from, to) => !!item.iso && item.iso >= from && item.iso <= to;
 const SHORT = ["янв","фев","мар","апр","мая","июн","июл","авг","сен","окт","ноя","дек"];
@@ -327,8 +344,30 @@ function rangeLabel(from, to){
 
 /* ---------- Render ---------- */
 function periodLabel(R, t){
-  if (state.period === "custom") return R ? rangeLabel(R.from, R.to) : "за всё время";
-  return { day: "сегодня, " + t.getDate() + " " + MONTHS[t.getMonth()], week: "последние 7 дней", month: "последние 30 дней" }[state.period];
+  switch (state.period) {
+    case "custom": return R ? rangeLabel(R.from, R.to) : "за всё время";
+    case "day": return "сегодня, " + t.getDate() + " " + MONTHS[t.getMonth()];
+    case "yesterday": return "вчера, " + rangeLabel(R.from, R.to);
+    case "week": return "последние 7 дней";
+    case "month": return "последние 30 дней";
+    case "thisMonth": return MONTHS_I[t.getMonth()] + " " + t.getFullYear();
+    case "lastMonth": { const d = isoToDate(R.from); return MONTHS_I[d.getMonth()] + " " + d.getFullYear(); }
+    case "year": return t.getFullYear() + " год";
+    default: return "за всё время";
+  }
+}
+const MONTHS_I = ["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
+/* строка пресетов периода */
+function pillsHtml(){
+  const R = state.data ? currentRange(state.data.today) : null;
+  const customLbl = state.period === "custom" && R ? rangeLabel(R.from, R.to) : "Свой период";
+  const cal = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>`;
+  return `<div class="pf" id="pf">${PRESETS.map(([k,l]) => `<button type="button" data-p="${k}" class="${state.period===k?"on":""}">${l}</button>`).join("")}<button type="button" data-p="custom" class="${state.period==="custom"?"on":""}">${cal}${esc(customLbl)}</button></div>`;
+}
+function scrollPills(root){
+  const on = (root || document).querySelector(".pf button.on"); if (!on) return;
+  const box = on.parentElement, x = on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2;
+  box.scrollTo({ left: Math.max(0, x), behavior: "auto" });
 }
 function render(){
   const d = state.data; if (!d) return;
@@ -349,11 +388,13 @@ function render(){
   if (R && prevTotal > 0) {
     const p = Math.round((total - prevTotal) / prevTotal * 100);
     const down = p <= 0;
-    delta = `<div class="delta ${down?"down":"up"}"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${down?'<path d="M6 2v8M2 6l4 4 4-4"/>':'<path d="M6 10V2M2 6l4-4 4 4"/>'}</svg>${Math.abs(p)}% к прошлому периоду</div>`;
+    const txt = p > 300 ? `в ${Math.round(total / prevTotal)} раз больше, чем в прошлом периоде` : `${Math.abs(p)}% к прошлому периоду`;
+    delta = `<div class="delta ${down?"down":"up"}"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${down?'<path d="M6 2v8M2 6l4 4 4-4"/>':'<path d="M6 10V2M2 6l4-4 4 4"/>'}</svg>${txt}</div>`;
   }
   const r = 40, C = 2*Math.PI*r; let off = 0;
   const segs = total ? cats.map(([c,a]) => { const len = a/total*C; const el = `<circle cx="52" cy="52" r="${r}" stroke="${catOf(c).hex}" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"/>`; off += len; return el; }).join("") : `<circle cx="52" cy="52" r="${r}" stroke="var(--fill2)" stroke-dasharray="${C} 0"/>`;
   const heroTitle = state.period === "day" ? "Потрачено сегодня" : "Потрачено · " + periodLabel(R, t);
+  html += pillsHtml();
   html += `<section class="section"><button type="button" class="card hero" data-act="chart" style="width:100%;text-align:left">
     <div><div class="lbl">${heroTitle}</div><div class="total num">${fmt(total)}</div>${delta}<div class="tap">${cats.length ? cats.length + " " + plural(cats.length,"категория","категории","категорий") + " · нажмите для деталей" : "нажмите, чтобы выбрать период"}</div></div>
     <div class="donut"><svg viewBox="0 0 104 104">${segs}</svg><div class="c"><b class="num">${cur.length}</b>${plural(cur.length,"трата","траты","трат")}</div></div>
@@ -373,38 +414,48 @@ function render(){
   html += `<section class="section"><div class="section-h"><span>Лимиты</span><button data-act="limits">Изменить</button></div>
     <div class="card">${limRows || `<button class="row" data-act="limits"><div class="ico" style="background:var(--green)">🎯</div><div class="main"><div class="name">Установить лимит</div><div class="sub">Бот предупредит, если выйдете за рамки</div></div><svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg></button>`}</div></section>`;
 
-  /* лента: все дни, новые сверху; фильтр по категории — на всю ленту */
+  /* лента: дни выбранного периода, новые сверху; фильтр по категории — на всю ленту; ниже — «Ранее» по запросу */
   const list = (state.filter ? d.expenses.filter(x=>x.category===state.filter) : d.expenses).filter(x => !!x.iso);
-  const groups = {}; list.forEach(x => (groups[x.iso] ||= []).push(x));
-  const keys = Object.keys(groups).sort().reverse();
-  const shown = keys.slice(0, state.days || 45);
-  const txHtml = shown.map(k => `<div class="group"><div class="date-h"><span>${dateLabel(k, d.today)}</span><span class="num">−${fmt(sum(groups[k]))}</span></div><div class="card">${
-    groups[k].map(x => { const m = catOf(x.category); return `<div class="sw" data-sw="${x.id}">
+  const inPeriod = R ? list.filter(x => inRange(x, R.from, R.to)) : list;
+  const earlier = R ? list.filter(x => x.iso < R.from) : [];
+  const groupsOf = arr => { const g = {}; arr.forEach(x => (g[x.iso] ||= []).push(x)); return g; };
+  const groups = groupsOf(inPeriod), keys = Object.keys(groups).sort().reverse();
+  const dayHtml = (k, g) => `<div class="group"><div class="date-h"><span>${dateLabel(k, d.today)}</span><span class="num">−${fmt(sum(g[k]))}</span></div><div class="card">${
+    g[k].map(x => { const m = catOf(x.category); return `<div class="sw" data-sw="${x.id}">
       <div class="sw-side sw-left"><button type="button" class="sw-btn edit" data-edit="${x.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>Изменить</button></div>
       <div class="sw-side sw-right"><button type="button" class="sw-btn del" data-del="${x.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>Удалить</button></div>
       <div class="sw-c"><button class="row" data-id="${x.id}">
       <div class="ico" style="background:${m.c}">${m.e}</div>
       <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}</div></div>
-      <div class="amt num">−${fmt(x.amount)}</div></button></div></div>`; }).join("")}</div></div>`).join("");
-  const more = keys.length > shown.length ? `<div style="text-align:center;padding:4px 0 10px"><button type="button" class="linkbtn" data-act="more">Показать ещё ${keys.length - shown.length} ${plural(keys.length - shown.length,"день","дня","дней")}</button></div>` : "";
-  html += `<section class="section"><div class="section-h"><span>${state.filter ? esc(state.filter) : "Операции"}</span><span>${state.filter ? `<button data-act="clear">Сбросить</button> · ` : ""}<button data-act="export">Выгрузить</button></span></div>
-    ${txHtml || `<div class="card"><div class="empty"><div class="big">💤</div>Пока пусто. Нажмите «+», чтобы добавить первую трату, или напишите боту: <b>такси 350</b></div></div>`}${more}</section>`;
+      <div class="amt num">−${fmt(x.amount)}</div></button></div></div>`; }).join("")}</div></div>`;
+  const txHtml = keys.map(k => dayHtml(k, groups)).join("");
+  const title = state.filter ? esc(state.filter) : (R ? "Операции · " + periodLabel(R, t) : "Все операции");
+  const emptyMsg = R
+    ? `<div class="card"><div class="empty"><div class="big">🗓</div>Нет трат ${state.period === "day" ? "за сегодня" : "за этот период"}${state.filter ? " в категории «" + esc(state.filter) + "»" : ""}.${earlier.length ? "" : " Нажмите «+», чтобы добавить, или напишите боту: <b>такси 350</b>"}</div></div>`
+    : `<div class="card"><div class="empty"><div class="big">💤</div>Пока пусто. Нажмите «+», чтобы добавить первую трату, или напишите боту: <b>такси 350</b></div></div>`;
+  html += `<section class="section"><div class="section-h"><span>${title}</span><span>${state.filter ? `<button data-act="clear">Сбросить</button> · ` : ""}<button data-act="export">Выгрузить</button></span></div>
+    ${txHtml || emptyMsg}</section>`;
+  /* более ранние операции: по умолчанию свёрнуты, разворачиваются одной кнопкой и листаются дальше */
+  if (earlier.length) {
+    if (!state.earlier) {
+      html += `<div style="text-align:center;padding:0 16px 22px"><button type="button" class="linkbtn" data-act="earlier">Показать более ранние · ${earlier.length} ${plural(earlier.length,"операция","операции","операций")}</button></div>`;
+    } else {
+      const eg = groupsOf(earlier), ek = Object.keys(eg).sort().reverse(), shown = ek.slice(0, state.days || 45);
+      const more = ek.length > shown.length ? `<div style="text-align:center;padding:4px 0 10px"><button type="button" class="linkbtn" data-act="more">Показать ещё ${ek.length - shown.length} ${plural(ek.length - shown.length,"день","дня","дней")}</button></div>` : "";
+      html += `<section class="section"><div class="section-h"><span>Ранее</span><button data-act="collapse">Скрыть</button></div>${shown.map(k => dayHtml(k, eg)).join("")}${more}</section>`;
+    }
+  }
   html += `<div class="footer"><button data-act="lock" hidden></button></div>`;
   document.getElementById("app").innerHTML = html;
+  scrollPills(document.getElementById("app"));
 }
 const sum = arr => arr.reduce((s,x)=>s+x.amount,0);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const plural = (n,a,b,c) => { n=Math.abs(n)%100; const m=n%10; return n>10&&n<20?c:m>1&&m<5?b:m===1?a:c; };
 
 /* ---------- Период ---------- */
-function setPeriod(p){ state.period = p; render(); }
-function segHtml(){
-  const idx = ["day","week","month","custom"].indexOf(state.period);
-  const R = state.data ? currentRange(state.data.today) : null;
-  const customLbl = state.period === "custom" ? (R ? rangeLabel(R.from, R.to) : "Всё время") : "Период";
-  return `<div class="seg" id="seg"><div class="thumb" style="transform:translateX(${idx*100}%)"></div>
-    <button data-p="day">Сегодня</button><button data-p="week">Неделя</button><button data-p="month">Месяц</button><button data-p="custom">${esc(customLbl)}</button></div>`;
-}
+function setPeriod(p){ state.period = p; state.earlier = false; state.days = 0; render(); }
+function pickPeriod(p, after){ haptic("light"); if (p === "custom") openPeriod(after); else { setPeriod(p); if (after) after(); } }
 
 /* ---------- Clicks ---------- */
 document.getElementById("app").addEventListener("click", e => {
@@ -415,6 +466,9 @@ document.getElementById("app").addEventListener("click", e => {
   if (swipe.openEl) { const inOpen = swipe.openEl.contains(b); closeSwipe(); if (inOpen) return; }
   if (b.dataset.cat !== undefined) { haptic("light"); state.filter = state.filter === b.dataset.cat ? null : b.dataset.cat; render(); }
   else if (b.dataset.act === "clear") { state.filter = null; render(); }
+  else if (b.dataset.p !== undefined) { pickPeriod(b.dataset.p); }
+  else if (b.dataset.act === "earlier") { haptic("light"); state.earlier = true; render(); }
+  else if (b.dataset.act === "collapse") { state.earlier = false; render(); const h = document.querySelector(".hero"); if (h) h.scrollIntoView({behavior:"smooth", block:"start"}); }
   else if (b.dataset.act === "more") { state.days = (state.days || 45) + 60; render(); }
   else if (b.dataset.act === "limits") { haptic("light"); openLimits(); }
   else if (b.dataset.act === "export") { haptic("light"); openExport(); }
@@ -656,9 +710,9 @@ function openChart(){
   const cats = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
   const r = 90, C = 2*Math.PI*r; let off = 0;
   const segs = cats.map(([c,a]) => { const len = a/total*C; const el = `<circle cx="110" cy="110" r="${r}" stroke="${catOf(c).hex}" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" data-c="${esc(c)}"/>`; off += len; return el; }).join("");
-  const period = state.period === "custom" ? (R ? rangeLabel(R.from, R.to) : "всё время") : {day:"сегодня", week:"7 дней", month:"30 дней"}[state.period];
+  const period = periodLabel(R, isoToDate(d.today));
   let hot = null;
-  const body = `${segHtml()}
+  const body = `${pillsHtml()}
     <div class="hint" style="text-align:center">${period} · ${cur.length} ${plural(cur.length,"трата","траты","трат")}</div>
     <div class="bigchart" id="bigchart"><svg viewBox="0 0 220 220">${segs || `<circle cx="110" cy="110" r="${r}" stroke="var(--fill2)" stroke-dasharray="${C} 0"/>`}</svg><div class="c" id="chartC"><b class="num">${fmt(total)}</b><span>всего</span></div></div>
     ${cats.length ? `<div class="card legend" id="legend">${cats.map(([c,a]) => `<button type="button" class="row" data-c="${esc(c)}"><div class="ico" style="background:${catOf(c).c};width:30px;height:30px;font-size:15px;border-radius:8px">${catOf(c).e}</div><div class="main"><div class="name">${esc(c)}</div></div><div><div class="amt num">${fmt(a)}</div><div class="sub right num">${(a/total*100).toFixed(1)}%</div></div></button>`).join("")}</div>
@@ -667,7 +721,9 @@ function openChart(){
   if (fresh) openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>По категориям</h2><span></span></div><div id="chartBody"></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
   document.getElementById("chartBody").innerHTML = body;
   (() => {
-    document.getElementById("seg").addEventListener("click", e => { const b = e.target.closest("button[data-p]"); if (!b) return; haptic("light"); if (b.dataset.p === "custom") openPeriod(openChart); else { setPeriod(b.dataset.p); openChart(); } });
+    const pf = document.getElementById("chartBody").querySelector(".pf");
+    pf.addEventListener("click", e => { const b = e.target.closest("button[data-p]"); if (!b) return; pickPeriod(b.dataset.p, openChart); });
+    scrollPills(document.getElementById("chartBody"));
     if (!cats.length) return;
     const chart = document.getElementById("bigchart"), legend = document.getElementById("legend"), center = document.getElementById("chartC");
     const select = c => {
@@ -759,7 +815,7 @@ function openPeriod(after){
 const PERIODS = [["7","Неделя"],["30","Месяц"],["90","3 месяца"],["365","Год"],["all","Всё время"]];
 function openExport(){
   const R = state.data ? currentRange(state.data.today) : null;
-  const custom = state.period === "custom" && R ? [["custom", "Выбранный период: " + rangeLabel(R.from, R.to)]] : [];
+  const custom = R ? [["custom", "Выбранный период: " + rangeLabel(R.from, R.to)]] : [];
   openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Выгрузка в Excel</h2><span></span></div>
     <div class="hint">Файл придёт в чат с ботом</div>
     <div class="fields">${custom.concat(PERIODS).map(([k,l]) => `<button type="button" class="opt" data-k="${k}"><span>${l}</span><svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg></button>`).join("")}</div>`, () => {
