@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -104,10 +105,16 @@ class WebAppApiTests(AioHTTPTestCase):
         self.assertEqual(r.status, 200)
         self.assertIn("2026-09-01_2026-09-03", r.headers["Content-Disposition"])
 
-    async def test_receipt_requires_key(self):
+    async def test_receipt_unreadable(self):
         webapp.ai.POLZA_API_KEY = ""
         r = await self.client.post("/api/receipt", data={"image": b"x"})
-        self.assertEqual(r.status, 503)
+        self.assertEqual(r.status, 422)
+        r = await self.client.post("/api/receipt/qr", json={"qr": "такси 350"})
+        self.assertEqual(r.status, 400)
+        with mock.patch.object(webapp.receipt, "PROVERKACHEKA_TOKEN", ""):
+            r = await self.client.post("/api/receipt/qr", json={"qr": "t=20260903T1842&s=517.77&fn=9960440300123456&i=12345&fp=1234567890&n=1"})
+        self.assertEqual(r.status, 200)
+        self.assertEqual((await r.json())["items"][0]["amount"], 518)
 
     async def test_index_served(self):
         r = await self.client.get("/")

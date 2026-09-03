@@ -21,6 +21,7 @@ jobs:
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       CHAD_API_KEY: ${{ secrets.CHAD_API_KEY }}
       POLZA_API_KEY: ${{ secrets.POLZA_API_KEY }}
+      PROVERKACHEKA_TOKEN: ${{ secrets.PROVERKACHEKA_TOKEN }}
       SSH_OPTS: -o StrictHostKeyChecking=no -o ConnectTimeout=20
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +47,8 @@ jobs:
           echo "== hostname =="; hostname -f 2>/dev/null; true
           echo "== bot =="; systemctl is-active bot_raskhody; ls -la /root/bot | grep -E 'json|\.env'; true
           echo "== firewall =="; command -v ufw >/dev/null && ufw status | head -15 || echo "no ufw"; true
+          echo "== AI selftest =="; cd /root/bot && venv/bin/python deploy/selftest.py 2>&1 | sed -E 's#[0-9]{8,}:[A-Za-z0-9_-]{30,}#<TOKEN>#g'; true
+          echo "== предупреждения и ошибки за 6 часов =="; journalctl -u bot_raskhody -u bot_raskhody-web --since "-6h" --no-pager | grep -iE "warn|error|traceback|polza|chad|receipt|ChadGPT" | tail -40 | sed -E 's#[0-9]{8,}:[A-Za-z0-9_-]{30,}#<TOKEN>#g'; true
           echo "== mem/disk =="; free -m | head -2; df -h / | tail -1
           REMOTE
 
@@ -64,7 +67,7 @@ jobs:
         if: env.ACTION == 'install' && env.TELEGRAM_TOKEN != ''
         run: |
           echo "::add-mask::$TELEGRAM_TOKEN"
-          { printf 'TELEGRAM_TOKEN=%s\n' "$TELEGRAM_TOKEN"; [ -n "$CHAD_API_KEY" ] && printf 'CHAD_API_KEY=%s\n' "$CHAD_API_KEY"; [ -n "$POLZA_API_KEY" ] && printf 'POLZA_API_KEY=%s\n' "$POLZA_API_KEY"; printf 'WEBAPP_URL=https://%s\n' "$WEBAPP_DOMAIN"; } \
+          { printf 'TELEGRAM_TOKEN=%s\n' "$TELEGRAM_TOKEN"; [ -n "$CHAD_API_KEY" ] && printf 'CHAD_API_KEY=%s\n' "$CHAD_API_KEY"; [ -n "$POLZA_API_KEY" ] && printf 'POLZA_API_KEY=%s\n' "$POLZA_API_KEY"; [ -n "$PROVERKACHEKA_TOKEN" ] && printf 'PROVERKACHEKA_TOKEN=%s\n' "$PROVERKACHEKA_TOKEN"; printf 'WEBAPP_URL=https://%s\n' "$WEBAPP_DOMAIN"; } \
             | sshpass -e ssh $SSH_OPTS "root@$HOST" 'cat > /root/bot/.env && chmod 600 /root/bot/.env && echo ".env записан"'
 
       - name: Restart bot

@@ -585,7 +585,23 @@ const val = id => document.getElementById(id).value;
 
 /* ---------- Чек ---------- */
 const fileInput = document.getElementById("file");
-document.getElementById("scanTop").addEventListener("click", () => { haptic("medium"); fileInput.value = ""; fileInput.click(); });
+document.getElementById("scanTop").addEventListener("click", () => {
+  haptic("medium");
+  if (tg && tg.showScanQrPopup && tg.isVersionAtLeast && tg.isVersionAtLeast("6.4")) {
+    // Сначала быстрый сканер QR Telegram; если QR нет — фото чека
+    tg.showScanQrPopup({text: "Наведите на QR-код чека. Если QR нет — закройте и сфотографируйте чек"}, async (data) => {
+      if (!data || !/t=\d{8}T\d{4}/i.test(data)) return false;
+      tg.closeScanQrPopup();
+      openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
+        <div class="empty"><div class="spin"></div><div style="margin-top:14px">Получаю чек по QR…</div></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
+      try { const rc = await api("/api/receipt/qr", {method:"POST", body: JSON.stringify({qr: data})}); haptic("ok"); showReceipt(rc); }
+      catch(e){ haptic("err"); closeSheet(); toast(e.message); }
+      return true;
+    });
+    tg.onEvent("scanQrPopupClosed", function once(){ tg.offEvent("scanQrPopupClosed", once); });
+  } else { fileInput.value = ""; fileInput.click(); }
+});
+document.getElementById("scanTop").addEventListener("contextmenu", e => { e.preventDefault(); fileInput.value = ""; fileInput.click(); });
 fileInput.addEventListener("change", async () => {
   const f = fileInput.files && fileInput.files[0]; if (!f) return;
   openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
@@ -605,7 +621,7 @@ function showReceipt(rc){
     const total = items.reduce((s,x)=>s+x.amount,0);
     sheet.innerHTML = `<div class="grab"></div>
       <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>${esc(rc.store || "Чек")}</h2><span></span></div>
-      <div class="hint">${dateLabel(rc.date, state.data.today)} · ${items.length} ${plural(items.length,"позиция","позиции","позиций")} · <b class="num">${fmt(total)}</b>${rc.total && rc.total !== total ? ` · в чеке ${fmt(rc.total)}` : ""}</div>
+      <div class="hint">${dateLabel(rc.date, state.data.today)} · ${items.length} ${plural(items.length,"позиция","позиции","позиций")} · <b class="num">${fmt(total)}</b>${rc.total && rc.total !== total ? ` · в чеке ${fmt(rc.total)}` : ""}${rc.source==="qr"?" · по QR":rc.source==="qr-sum"?" · только сумма из QR":""}</div>
       <div class="fields" id="rcList">${items.map((it,i) => { const m = catOf(it.category); return `<div class="rc-item"><div class="ico" style="background:${m.c};width:30px;height:30px;font-size:15px;border-radius:8px">${m.e}</div><div class="name">${esc(it.name)}<div class="cat">${esc(it.category)}</div></div><div class="amt num">${fmt(it.amount)}</div><button type="button" class="x" data-i="${i}">✕</button></div>`; }).join("")}</div>
       <button type="button" class="bigbtn" id="rcAdd" ${items.length?"":"disabled"}>Добавить ${items.length ? items.length + " " + plural(items.length,"позицию","позиции","позиций") : ""}</button>`;
     document.getElementById("cancel").onclick = closeSheet;

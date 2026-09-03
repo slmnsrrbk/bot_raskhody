@@ -31,6 +31,7 @@ from telegram.ext import (
 
 import ai
 import export
+import receipt
 import storage
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -308,9 +309,6 @@ async def _do_delete(send, context, user_id: int, expense_id: int):
 # --- чек по фото ---
 @guarded
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    if not ai.POLZA_API_KEY:
-        await update.message.reply_text("Распознавание чеков не настроено (нет ключа Polza AI).")
-        return
     wait = await update.message.reply_text("🔎 Читаю чек…")
     photo = update.message.photo[-1] if update.message.photo else None
     doc = update.message.document
@@ -329,10 +327,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
         logger.warning("Не удалось скачать фото: %s", e)
         await wait.edit_text("Не удалось получить фото, попробуйте ещё раз.")
         return
-    parsed = await in_thread(ai.parse_receipt, data, mime)
+    parsed = await in_thread(receipt.resolve, data, None, mime)
     if not parsed or not parsed["items"]:
-        await wait.edit_text("🤷 Не смог разобрать чек. Попробуйте сфотографировать ровнее и при хорошем свете.")
+        await wait.edit_text("🤷 Не смог разобрать чек. Попробуйте сфотографировать ровнее и при хорошем свете, чтобы был виден QR-код.")
         return
+    await _finish_receipt(update, context, user_id, parsed, wait)
+
+
+async def _finish_receipt(update, context, user_id: int, parsed: dict, wait):
     date = parsed["date"] or today().isoformat()
     for it in parsed["items"]:
         it["date"] = date
@@ -340,7 +342,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
     token = secrets.token_hex(4)
     context.user_data.setdefault("receipts", {})[token] = [a["id"] for a in added]
     total = sum(a["amount"] for a in added)
-    head = f"🧾 {parsed['store'] or 'Чек'} · {storage.to_display(date)}"
+    src = {"qr": " · по QR", "ai": "", "qr-sum": " · только сумма из QR"}.get(parsed.get("source"), "")
+    head = f"🧾 {parsed['store'] or 'Чек'} · {storage.to_display(date)}{src}"
     lines = [f"• {a['name']} — {fmt(a['amount'])} ({a['category']})" for a in added[:20]]
     if len(added) > 20:
         lines.append(f"… и ещё {len(added) - 20}")
@@ -509,6 +512,7 @@ def main():
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_DELETE}$"), ask_delete))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_EXPORT}$"), ask_export))
     app.add_handler(MessageHandler(T & filters.Regex(r"(?i)^удалить\s+последн"), delete_last))
+    app.add_handler(MessageHandler(T & filters.Regex(receipt.QR_RE.pattern), handle_qr_text))
     app.add_handler(MessageHandler(T & filters.Regex(r"(?i)лимит$"), ask_limit_value))
     app.add_handler(MessageHandler(T & filters.Regex(r"^\d+$"), set_limit_value))
     app.add_handler(MessageHandler(T & filters.Regex("^🔙 Назад$"), start))

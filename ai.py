@@ -130,6 +130,33 @@ def detect_category(name: str) -> str:
     return DEFAULT
 
 
+def classify_many(names):
+    """Категории для списка названий одним запросом (словарь и кэш — без запроса)."""
+    result = [None] * len(names)
+    todo = []
+    for i, n in enumerate(names):
+        key = normalize(n)
+        result[i] = by_keywords(key) or storage.cache_get(key)
+        if not result[i]:
+            todo.append(i)
+    if todo and POLZA_API_KEY:
+        prompt = ("Для каждой строки укажи категорию из списка: " + ", ".join(CATEGORIES) +
+                  ". Ответь строго построчно в формате «номер. категория», без пояснений.\n" +
+                  "\n".join(f"{k + 1}. {names[i]}" for k, i in enumerate(todo)))
+        answer = _polza([{"role": "user", "content": prompt}], max_tokens=20 * len(todo) + 20)
+        if answer:
+            for line in answer.splitlines():
+                m = re.match(r"\s*(\d+)[.):\s-]+\s*(.+)", line)
+                if not m:
+                    continue
+                k = int(m.group(1)) - 1
+                cat = _pick_category(m.group(2))
+                if 0 <= k < len(todo) and cat:
+                    result[todo[k]] = cat
+                    storage.cache_set(normalize(names[todo[k]]), cat)
+    return [c or DEFAULT for c in result]
+
+
 def generate_advice(report: str) -> str:
     prompt = f"{report}\n\nДай один короткий и практичный совет по оптимизации расходов (1–2 предложения, по-русски)."
     answer = _polza([{"role": "user", "content": prompt}], max_tokens=120, temperature=0.7)

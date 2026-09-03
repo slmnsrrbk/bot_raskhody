@@ -20,6 +20,7 @@ import aiohttp
 
 import ai
 import export
+import receipt
 import storage
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -239,8 +240,6 @@ async def api_bulk(request: web.Request):
 
 async def api_receipt(request: web.Request):
     """Фото чека (multipart, поле image) -> распознанные позиции без сохранения."""
-    if not ai.POLZA_API_KEY:
-        raise _error(web.HTTPServiceUnavailable, "Распознавание чеков не настроено")
     reader = await request.multipart()
     data, mime = b"", "image/jpeg"
     async for part in reader:
@@ -255,9 +254,22 @@ async def api_receipt(request: web.Request):
                     raise _error(web.HTTPRequestEntityTooLarge, "Фото больше 8 МБ")
     if not data:
         raise _error(web.HTTPBadRequest, "Нет фото")
-    parsed = await request.loop.run_in_executor(None, ai.parse_receipt, data, mime if mime.startswith("image/") else "image/jpeg")
+    parsed = await request.loop.run_in_executor(None, receipt.resolve, data, None, mime if mime.startswith("image/") else "image/jpeg")
     if not parsed or not parsed["items"]:
-        raise _error(web.HTTPUnprocessableEntity, "Не удалось разобрать чек. Сфотографируйте ровнее при хорошем свете")
+        raise _error(web.HTTPUnprocessableEntity, "Не удалось разобрать чек. Сфотографируйте ровнее при хорошем свете, чтобы был виден QR-код")
+    parsed["date"] = parsed["date"] or today().isoformat()
+    return web.json_response(parsed)
+
+
+async def api_receipt_qr(request: web.Request):
+    """Строка QR-кода (например, из сканера Telegram) -> позиции чека."""
+    body = await request.json()
+    qr = receipt.find_qr_text(str(body.get("qr", "")))
+    if not qr:
+        raise _error(web.HTTPBadRequest, "Это не QR-код кассового чека")
+    parsed = await request.loop.run_in_executor(None, receipt.resolve, None, qr)
+    if not parsed:
+        raise _error(web.HTTPUnprocessableEntity, "Не удалось получить чек по этому QR")
     parsed["date"] = parsed["date"] or today().isoformat()
     return web.json_response(parsed)
 
@@ -313,6 +325,7 @@ def make_app() -> web.Application:
     app.router.add_put("/api/limits", api_limits)
     app.router.add_post("/api/expenses/bulk", api_bulk)
     app.router.add_post("/api/receipt", api_receipt)
+    app.router.add_post("/api/receipt/qr", api_receipt_qr)
     app.router.add_post("/api/export", api_export)
     app.router.add_static("/static", STATIC_DIR, show_index=False)
     return app
