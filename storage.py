@@ -197,6 +197,33 @@ def upsert_user(user_id: int, first_name: str = "", username: str = "", day: dat
         con.execute("INSERT OR IGNORE INTO user_days(user_id, day) VALUES(?,?)", (user_id, day))
 
 
+# --- владелец: по OWNER_ID из .env, иначе по нику; найденный по нику id запоминается в meta ---
+OWNER_ID = int(os.getenv("OWNER_ID") or 0)
+OWNER_USERNAME = os.getenv("OWNER_USERNAME", "slmn_8").lstrip("@").strip().lower()
+
+
+def owner_id() -> int:
+    """Известный id владельца: из .env или сохранённый после входа по нику (0 — ещё не известен)."""
+    if OWNER_ID:
+        return OWNER_ID
+    with connect() as con:
+        r = con.execute("SELECT value FROM meta WHERE key='owner_id'").fetchone()
+        return int(r["value"]) if r and str(r["value"]).isdigit() else 0
+
+
+def is_owner(user_id: int, username: str = None) -> bool:
+    if OWNER_ID:
+        return user_id == OWNER_ID
+    known = owner_id()
+    if known:
+        return user_id == known
+    if OWNER_USERNAME and username and username.lstrip("@").lower() == OWNER_USERNAME:
+        with connect() as con:                      # первый вход владельца — фиксируем его id
+            con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('owner_id', ?)", (str(user_id),))
+        return True
+    return False
+
+
 def is_blocked(user_id: int) -> bool:
     with connect() as con:
         r = con.execute("SELECT blocked FROM users WHERE id=?", (user_id,)).fetchone()

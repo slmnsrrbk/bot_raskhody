@@ -276,6 +276,18 @@ class AdminStorageTests(StorageTests):
         self.assertFalse(storage.is_blocked(1))
         self.assertFalse(storage.set_blocked(999, True))
 
+    def test_owner_resolved_by_username_then_pinned_to_id(self):
+        from unittest import mock
+        with mock.patch.object(storage, "OWNER_ID", 0), mock.patch.object(storage, "OWNER_USERNAME", "slmn_8"):
+            self.assertFalse(storage.is_owner(10, "someone"))
+            self.assertTrue(storage.is_owner(77, "@Slmn_8"))          # первый вход по нику
+            self.assertEqual(storage.owner_id(), 77)
+            self.assertTrue(storage.is_owner(77, None))               # дальше — по id
+            self.assertFalse(storage.is_owner(78, "slmn_8"))          # чужой аккаунт с тем же ником не пройдёт
+        with mock.patch.object(storage, "OWNER_ID", 5):
+            self.assertTrue(storage.is_owner(5))
+            self.assertFalse(storage.is_owner(77, "slmn_8"))
+
     def test_blocked_user_rejected_by_bot(self):
         class U:
             id, first_name, username = 55, "X", ""

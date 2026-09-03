@@ -161,11 +161,11 @@ def register(update: Update) -> int:
     u = update.effective_user
     if ALLOWED_USER_IDS and u.id not in ALLOWED_USER_IDS:
         raise PermissionError
-    if u.id != OWNER_ID and storage.is_blocked(u.id):
+    if not storage.is_owner(u.id, u.username) and storage.is_blocked(u.id):
         raise PermissionError
     storage.upsert_user(u.id, u.first_name or "", u.username or "", today())
     if storage.legacy_pending():
-        owner = OWNER_ID or u.id
+        owner = storage.owner_id() or OWNER_ID or u.id
         n = storage.migrate_legacy(owner)
         logger.info("Старые записи (%s шт.) перенесены пользователю %s", n, owner)
     return u.id
@@ -414,9 +414,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/id — Telegram ID пользователя (нужен, чтобы указать OWNER_ID для админки)."""
+    """/id — Telegram ID пользователя (и признак владельца)."""
     u = update.effective_user
-    await update.message.reply_text(f"Ваш Telegram ID: `{u.id}`", parse_mode="Markdown")
+    who = " · вы владелец бота" if storage.is_owner(u.id, u.username) else ""
+    await update.message.reply_text(f"Ваш Telegram ID: `{u.id}`{who}", parse_mode="Markdown")
 
 
 @guarded

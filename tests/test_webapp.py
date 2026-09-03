@@ -193,7 +193,7 @@ class AdminApiTests(WebAppApiTests):
         from unittest import mock
         webapp.storage.upsert_user(7, "Гость", "")
         webapp.storage.set_blocked(7, True)
-        with mock.patch.object(webapp, "OWNER_ID", 1):     # владелец — не dev-пользователь 0
+        with mock.patch.object(webapp.storage, "OWNER_ID", 1):     # владелец — не dev-пользователь 0
             r = await self.client.get("/api/admin/overview")
             self.assertEqual(r.status, 403)
             state = await (await self.client.get("/api/state")).json()

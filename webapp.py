@@ -35,11 +35,11 @@ logger = logging.getLogger("webapp")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 ALLOWED_USER_IDS = {int(x) for x in re.findall(r"\d+", os.getenv("ALLOWED_USER_IDS", ""))}
-OWNER_ID = int(os.getenv("OWNER_ID") or 0)          # владелец: видит админку и управляет доступом
+OWNER_ID = storage.OWNER_ID                          # владелец: видит админку и управляет доступом
 
 
-def is_admin(uid: int) -> bool:
-    return uid == OWNER_ID if OWNER_ID else (DEV_MODE and uid == 0)
+def is_admin(uid: int, username: str = None) -> bool:
+    return storage.is_owner(uid, username)
 DEV_MODE = os.getenv("WEBAPP_DEV", "") == "1"          # без проверки подписи Telegram (только локально)
 HOST = os.getenv("WEBAPP_HOST", "127.0.0.1")
 PORT = int(os.getenv("WEBAPP_PORT", "8080"))
@@ -116,7 +116,7 @@ async def auth_middleware(request: web.Request, handler):
     if not request.path.startswith("/api/"):
         return await handler(request)
     if DEV_MODE:
-        user = {"id": 0, "first_name": "Dev"}
+        user = {"id": 0, "first_name": "Dev", "username": storage.OWNER_USERNAME}   # локально dev-пользователь = владелец
     else:
         user = validate_init_data(request.headers.get("X-Telegram-Init-Data", ""))
         if user is None or not isinstance(user.get("id"), int):
@@ -125,7 +125,7 @@ async def auth_middleware(request: web.Request, handler):
             raise _error(web.HTTPForbidden, "Доступ закрыт")
     if rate_limited(user["id"]):
         raise _error(web.HTTPTooManyRequests, "Слишком много запросов, подождите минуту")
-    if not is_admin(user["id"]) and storage.is_blocked(user["id"]):
+    if not is_admin(user["id"], user.get("username")) and storage.is_blocked(user["id"]):
         raise _error(web.HTTPForbidden, "Доступ закрыт администратором")
     storage.upsert_user(user["id"], user.get("first_name", ""), user.get("username", ""), today())
     request["user"] = user
@@ -166,13 +166,13 @@ async def api_state(request: web.Request):
         "categories": storage.all_categories(uid),
         "limits": storage.get_limits(uid),
         "expenses": storage.list_expenses(uid),
-        "user": {"id": uid, "first_name": request["user"].get("first_name", ""), "is_admin": is_admin(uid)},
+        "user": {"id": uid, "first_name": request["user"].get("first_name", ""), "is_admin": is_admin(uid, request["user"].get("username"))},
     })
 
 
 # --- админка владельца: только метаданные, содержимое трат остаётся зашифрованным ---
 def _require_admin(request: web.Request):
-    if not is_admin(request["user_id"]):
+    if not is_admin(request["user_id"], request["user"].get("username")):
         raise _error(web.HTTPForbidden, "Только для владельца")
 
 
