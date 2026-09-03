@@ -52,7 +52,7 @@ jobs:
       - name: Reset data (delete all expenses, limits, encryption key)
         if: env.ACTION == 'reset-data'
         run: |
-          sshpass -e ssh $SSH_OPTS "root@$HOST" 'systemctl stop bot_raskhody bot_raskhody-web; cd /root/bot && rm -rf /dev/shm/bot_raskhody; rm -f data.db data.db-wal data.db-shm .data_key expenses.json limits.json expenses.json.imported limits.json.imported && echo "данные удалены"; systemctl start bot_raskhody bot_raskhody-web; sleep 5; echo "bot: $(systemctl is-active bot_raskhody)  web: $(systemctl is-active bot_raskhody-web)"'
+          sshpass -e ssh $SSH_OPTS "root@$HOST" 'systemctl stop bot_raskhody bot_raskhody-web; cd /root/bot && rm -f data.db data.db-wal data.db-shm .data_key expenses.json limits.json expenses.json.imported limits.json.imported && echo "данные удалены"; systemctl start bot_raskhody bot_raskhody-web; sleep 5; echo "bot: $(systemctl is-active bot_raskhody)  web: $(systemctl is-active bot_raskhody-web)"'
 
       - name: Install / update bot
         if: env.ACTION == 'install'

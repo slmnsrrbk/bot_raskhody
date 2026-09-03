@@ -26,9 +26,8 @@ class WebAppApiTests(AioHTTPTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
         webapp.storage.DB_FILE = base / "t.db"
-        crypto.UNLOCK_DIR = base / "shm"; crypto.reset_cache()
+        crypto.KEY_FILE = base / ".k"; crypto.reset_cache()
         webapp.storage.init_db()
-        crypto.setup_pin(0, "secret1"); crypto.setup_pin(7, "secret7")
         webapp.DEV_MODE = True
         webapp._buckets.clear()
         webapp.storage.add_expense(0, "Кофе", 250, "Еда", "03.09.2026")
@@ -109,39 +108,6 @@ class WebAppApiTests(AioHTTPTestCase):
         webapp.ai.POLZA_API_KEY = ""
         r = await self.client.post("/api/receipt", data={"image": b"x"})
         self.assertEqual(r.status, 503)
-
-    async def test_locked_flow(self):
-        crypto.lock(0)
-        r = await self.client.get("/api/state")
-        self.assertEqual(r.status, 200)
-        self.assertTrue((await r.json())["locked"])
-        r = await self.client.post("/api/expenses", json={"name": "x", "amount": 1})
-        self.assertEqual(r.status, 423)
-        r = await self.client.post("/api/unlock", json={"pin": "nope-nope"})
-        self.assertEqual(r.status, 403)
-        r = await self.client.post("/api/unlock", json={"pin": "secret1"})
-        self.assertEqual(r.status, 200)
-        r = await self.client.get("/api/state")
-        self.assertEqual(len((await r.json())["expenses"]), 2)
-        r = await self.client.post("/api/pin", json={"old": "secret1", "new": "secret1new"})
-        self.assertEqual(r.status, 200)
-        r = await self.client.post("/api/lock", json={})
-        self.assertEqual(r.status, 200)
-        r = await self.client.post("/api/unlock", json={"pin": "secret1new"})
-        self.assertEqual(r.status, 200)
-
-    async def test_setup_pin_for_new_user(self):
-        webapp.storage.wipe_user(0)
-        r = await self.client.get("/api/state")
-        self.assertEqual((await r.json())["status"], "nopin")
-        r = await self.client.post("/api/pin", json={"pin": "abc", "pin2": "abc"})
-        self.assertEqual(r.status, 400)
-        r = await self.client.post("/api/pin", json={"pin": "abcdef1", "pin2": "abcdef2"})
-        self.assertEqual(r.status, 400)
-        r = await self.client.post("/api/pin", json={"pin": "abcdef1", "pin2": "abcdef1"})
-        self.assertEqual(r.status, 200)
-        r = await self.client.get("/api/state")
-        self.assertNotIn("locked", await r.json())
 
     async def test_index_served(self):
         r = await self.client.get("/")

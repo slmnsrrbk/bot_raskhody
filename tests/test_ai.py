@@ -13,7 +13,7 @@ class AiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         storage.DB_FILE = storage.Path(self.tmp.name) / "t.db"
-        crypto.UNLOCK_DIR = storage.Path(self.tmp.name) / "shm"; crypto.reset_cache()
+        crypto.KEY_FILE = storage.Path(self.tmp.name) / ".k"; crypto.reset_cache()
         storage.init_db()
 
     def tearDown(self):

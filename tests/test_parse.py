@@ -41,12 +41,10 @@ class StorageTests(unittest.TestCase):
         storage.DB_FILE = storage.Path(self.tmp.name) / "t.db"
         storage.LEGACY_EXPENSES = storage.Path(self.tmp.name) / "expenses.json"
         storage.LEGACY_LIMITS = storage.Path(self.tmp.name) / "limits.json"
-        crypto.UNLOCK_DIR = storage.Path(self.tmp.name) / "shm"; crypto.reset_cache()
+        crypto.KEY_FILE = storage.Path(self.tmp.name) / ".k"; crypto.reset_cache()
         storage.init_db()
         storage.upsert_user(1, "A")
         storage.upsert_user(2, "B")
-        for uid in (1, 2):
-            crypto.setup_pin(uid, f"pass{uid}00")
 
     def tearDown(self):
         self.tmp.cleanup()

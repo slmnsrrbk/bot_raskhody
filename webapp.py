@@ -19,7 +19,6 @@ from aiohttp import web
 import aiohttp
 
 import ai
-import crypto
 import export
 import storage
 
@@ -122,20 +121,7 @@ async def auth_middleware(request: web.Request, handler):
     storage.upsert_user(user["id"], user.get("first_name", ""), user.get("username", ""))
     request["user"] = user
     request["user_id"] = user["id"]
-    if request.path not in OPEN_PATHS and crypto.status(user["id"]) != "unlocked":
-        return _locked_response(user["id"])
-    try:
-        return await handler(request)
-    except (crypto.Locked, crypto.NoPin):
-        return _locked_response(user["id"])
-
-
-OPEN_PATHS = {"/api/state", "/api/unlock", "/api/pin", "/api/lock", "/api/forgot"}
-
-
-def _locked_response(user_id: int):
-    st = crypto.status(user_id)
-    return web.json_response({"error": "Данные закрыты", "locked": True, "status": st}, status=423)
+    return await handler(request)
 
 
 # ---------------------------------------------------------------------------
@@ -166,10 +152,6 @@ def parse_date(value) -> str:
 
 async def api_state(request: web.Request):
     uid = request["user_id"]
-    st = crypto.status(uid)
-    if st != "unlocked":
-        return web.json_response({"locked": True, "status": st, "today": today().isoformat(),
-                                  "user": {"id": uid, "first_name": request["user"].get("first_name", "")}})
     return web.json_response({
         "today": today().isoformat(),
         "categories": CATEGORIES,
@@ -234,56 +216,6 @@ async def api_limits(request: web.Request):
                 except ValueError:
                     raise _error(web.HTTPBadRequest, "Лимит должен быть числом")
     return web.json_response(storage.set_limits(uid, **values))
-
-
-# --- пароль шифрования ---
-async def api_pin(request: web.Request):
-    """Создать пароль {pin, pin2} или сменить {old, new}."""
-    uid = request["user_id"]
-    body = await request.json()
-    try:
-        if "old" in body:
-            crypto.change_pin(uid, str(body.get("old", "")), str(body.get("new", "")))
-        else:
-            pin, pin2 = str(body.get("pin", "")), str(body.get("pin2", body.get("pin", "")))
-            if pin != pin2:
-                raise _error(web.HTTPBadRequest, "Пароли не совпадают")
-            crypto.setup_pin(uid, pin)
-    except ValueError as e:
-        raise _error(web.HTTPBadRequest, str(e))
-    except crypto.WrongPin:
-        raise _error(web.HTTPForbidden, "Неверный пароль")
-    except crypto.TooManyAttempts:
-        raise _error(web.HTTPTooManyRequests, "Слишком много неверных попыток, подождите 15 минут")
-    return web.json_response({"ok": True, "status": crypto.status(uid)})
-
-
-async def api_unlock(request: web.Request):
-    uid = request["user_id"]
-    body = await request.json()
-    try:
-        crypto.unlock(uid, str(body.get("pin", "")))
-    except crypto.NoPin:
-        raise _error(web.HTTPBadRequest, "Пароль ещё не задан")
-    except crypto.WrongPin:
-        raise _error(web.HTTPForbidden, "Неверный пароль")
-    except crypto.TooManyAttempts:
-        raise _error(web.HTTPTooManyRequests, "Слишком много неверных попыток, подождите 15 минут")
-    return web.json_response({"ok": True})
-
-
-async def api_lock(request: web.Request):
-    crypto.lock(request["user_id"])
-    return web.json_response({"ok": True})
-
-
-async def api_forgot(request: web.Request):
-    """Пароль забыт: удалить все данные пользователя и ключ (подтверждение в интерфейсе)."""
-    body = await request.json()
-    if body.get("confirm") != "УДАЛИТЬ":
-        raise _error(web.HTTPBadRequest, "Нет подтверждения")
-    storage.wipe_user(request["user_id"])
-    return web.json_response({"ok": True})
 
 
 async def api_bulk(request: web.Request):
@@ -379,10 +311,6 @@ def make_app() -> web.Application:
     app.router.add_put(r"/api/expenses/{id:\d+}", api_update)
     app.router.add_delete(r"/api/expenses/{id:\d+}", api_delete)
     app.router.add_put("/api/limits", api_limits)
-    app.router.add_post("/api/pin", api_pin)
-    app.router.add_post("/api/unlock", api_unlock)
-    app.router.add_post("/api/lock", api_lock)
-    app.router.add_post("/api/forgot", api_forgot)
     app.router.add_post("/api/expenses/bulk", api_bulk)
     app.router.add_post("/api/receipt", api_receipt)
     app.router.add_post("/api/export", api_export)
