@@ -117,10 +117,11 @@ button{background:none;border:0;padding:0;cursor:pointer}
 
 /* ---- Cards ---- */
 .section{margin:0 16px 22px}
-.section-h{font-size:13px;font-weight:400;color:var(--label2);text-transform:uppercase;letter-spacing:.02em;padding:0 16px 7px;display:flex;justify-content:space-between;align-items:center}
-.section-h button{color:var(--blue);text-transform:none;font-size:15px;font-weight:400;letter-spacing:0}
-.section-h .fbtn{display:inline-flex;align-items:center;gap:5px;vertical-align:middle}
-.section-h .fbtn svg{width:16px;height:16px}
+.section-h{font-size:13px;font-weight:400;color:var(--label2);text-transform:uppercase;letter-spacing:.02em;padding:0 4px 7px;display:flex;justify-content:space-between;align-items:center;min-height:24px}
+.section-h > span{display:inline-flex;align-items:center;gap:6px}
+.section-h button{color:var(--blue);text-transform:none;font-size:15px;font-weight:400;letter-spacing:0;display:inline-flex;align-items:center;gap:5px;line-height:1;height:24px}
+.section-h .sep{color:var(--label3);font-size:15px;line-height:1}
+.section-h .fbtn svg{width:16px;height:16px;display:block}
 .section-h .fbtn.on{font-weight:600}
 .fsum{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 4px 10px;font-size:13px;color:var(--label2)}
 .fsum .tag{background:var(--fill);border-radius:999px;padding:4px 10px;color:var(--label);font-weight:500}
@@ -184,7 +185,7 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .bar{height:4px;border-radius:2px;background:var(--fill);margin-top:6px;overflow:hidden}
 .bar i{display:block;height:100%;border-radius:2px;background:var(--cat,var(--blue));transform-origin:left;transition:width .7s cubic-bezier(.2,.8,.2,1)}
 .row.active{background:var(--fill)}
-.date-h{font-size:17px;font-weight:700;color:var(--label);padding:8px 16px 8px 4px;display:flex;justify-content:space-between;align-items:baseline;letter-spacing:-.01em}
+.date-h{font-size:17px;font-weight:700;color:var(--label);padding:8px 4px;display:flex;justify-content:space-between;align-items:baseline;letter-spacing:-.01em}
 .date-h .num{font-size:15px;font-weight:500;color:var(--label2)}
 .hero .tap{font-size:12px;color:var(--label2);margin-top:6px}
 .group{margin-bottom:14px}
@@ -501,7 +502,7 @@ function render(){
   const emptyMsg = fOn
     ? `<div class="card"><div class="empty"><div class="big">🔍</div>По фильтру ничего не найдено</div></div>`
     : `<div class="card"><div class="empty"><div class="big">💤</div>Пока пусто. Нажмите «+», чтобы добавить первую трату, или напишите боту: <b>такси 350</b></div></div>`;
-  html += `<section class="section" id="feed"><div class="section-h"><span>Операции</span><span><button type="button" class="fbtn ${fOn?"on":""}" data-act="filter">${funnel}Фильтр</button> · <button data-act="export">Выгрузить</button></span></div>
+  html += `<section class="section" id="feed"><div class="section-h"><span>Операции</span><span><button type="button" class="fbtn ${fOn?"on":""}" data-act="filter">${funnel}Фильтр</button><span class="sep">·</span><button data-act="export">Выгрузить</button></span></div>
     ${fOn ? `<div class="fsum">${filterSummary().map(t => `<span class="tag">${esc(t)}</span>`).join("")}<span>${nAll} ${plural(nAll,"операция","операции","операций")}</span><button type="button" data-act="clear">Сбросить</button></div>` : ""}
     ${txHtml || emptyMsg}${keys.length > state.shown ? `<div id="sentinel" style="height:1px"></div>` : ""}</section>`;
   html += `<div class="footer"><button data-act="lock" hidden></button></div>`;
