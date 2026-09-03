@@ -336,17 +336,6 @@ const NBSP = " ";
 const curSym = () => (state.data && state.data.settings && state.data.settings.symbol) || "₽";
 const curCode = () => (state.data && state.data.settings && state.data.settings.currency) || "RUB";
 const symOf = code => { const c = ((state.data && state.data.currencies) || []).find(x => x.code === code); return c ? (c.symbol || c.code) : code; };
-/* чипы валют для формы: основная + избранные */
-function curChips(selected){
-  const st = (state.data && state.data.settings) || {currency:"RUB", favorites:["RUB","USD","EUR"]};
-  const codes = [st.currency].concat(st.favorites.filter(c => c !== st.currency)); if (selected && !codes.includes(selected)) codes.push(selected);
-  return `<div class="chips" id="curChips" style="padding:0 0 12px">${codes.map(c => `<button type="button" class="chip ${c===selected?"sel":""}" data-cur="${c}">${esc(symOf(c))} ${c}</button>`).join("")}</div>`;
-}
-function bindCurChips(){
-  const box = document.getElementById("curChips"); if (!box) return () => curCode();
-  box.addEventListener("click", e => { const b = e.target.closest(".chip"); if (!b) return; haptic("light"); box.querySelectorAll(".chip").forEach(x => x.classList.toggle("sel", x === b)); const lbl = document.querySelector(".amount-field .cur"); if (lbl) lbl.textContent = curLabel(b.dataset.cur); });
-  return () => { const sel = box.querySelector(".chip.sel"); return sel ? sel.dataset.cur : curCode(); };
-}
 const curLabel = code => { const c = ((state.data && state.data.currencies) || []).find(x => x.code === code); return c ? (c.symbol || c.code) + " · " + c.name : code; };
 const curName = () => { const d = state.data; if (!d || !d.settings) return "рублей"; const c = (d.currencies || []).find(x => x.code === d.settings.currency); return c ? (c.symbol || c.code) + " · " + c.name : d.settings.currency; };
 const fmt = n => Math.round(n).toLocaleString("ru-RU").replace(/\s/g, NBSP) + NBSP + curSym();
@@ -749,7 +738,6 @@ function formHtml(title, item){
   return `<div class="grab"></div>
   <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>${title}</h2><button type="button" class="primary" id="save">Готово</button></div>
   <div class="amount-field"><input id="amount" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${item?(item.orig_amount != null ? item.orig_amount : item.amount):""}" autocomplete="off" ${item?"":"autofocus"}><div class="cur">${curLabel(item && item.currency ? item.currency : curCode())}</div></div>
-  ${curChips(item && item.currency ? item.currency : curCode())}
   <div class="name-field"><input id="name" enterkeyhint="done" placeholder="Название: кофе, такси…" value="${item?esc(item.name):""}" autocomplete="off" autocapitalize="sentences"></div>
   <div class="fields">
     <div class="field"><label>Дата</label><input id="date" type="date" value="${item?item.iso:today}" max="${today}"></div>
@@ -769,8 +757,7 @@ function openAdd(){
   openSheet(formHtml("Новая трата", null), () => {
     const amount = document.getElementById("amount");
     amount.focus({preventScroll:true});   // синхронно в обработчике касания — так iOS сразу показывает клавиатуру
-    const getCur = bindCurChips();
-    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: "", note: val("note"), currency: getCur() }, "POST", "/api/expenses", "Добавлено");
+    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: "", note: val("note") }, "POST", "/api/expenses", "Добавлено");
     wireEnter(save);
     document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("save").onclick = save;
@@ -779,8 +766,8 @@ function openAdd(){
 function openEdit(id){
   const item = state.data.expenses.find(x=>x.id===id); if (!item) return;
   openSheet(formHtml("Изменить", item), () => {
-    const getCat = bindCats(), getCur = bindCurChips();
-    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat(), note: val("note"), currency: getCur() }, "PUT", "/api/expenses/"+id, "Сохранено");
+    const getCat = bindCats();
+    const save = () => submit({ name: val("name"), amount: val("amount"), date: val("date"), category: getCat(), note: val("note") }, "PUT", "/api/expenses/"+id, "Сохранено");
     wireEnter(save);
     document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("save").onclick = save;
