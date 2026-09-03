@@ -16,10 +16,12 @@ from openpyxl import load_workbook  # noqa: E402
 class CryptoTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        crypto.KEY_FILE = storage.Path(self.tmp.name) / ".k"
+        crypto.UNLOCK_DIR = storage.Path(self.tmp.name) / "shm"
         crypto.reset_cache()
         storage.DB_FILE = storage.Path(self.tmp.name) / "t.db"
         storage.init_db()
+        for uid in (1, 2, 5, 7):
+            crypto.setup_pin(uid, f"pass{uid}00")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -27,11 +29,60 @@ class CryptoTests(unittest.TestCase):
 
     def test_roundtrip_and_per_user_keys(self):
         c = crypto.encrypt(1, "Кофе")
-        self.assertTrue(c.startswith("enc1:"))
+        self.assertTrue(c.startswith("enc2:"))
         self.assertEqual(crypto.decrypt(1, c), "Кофе")
         with self.assertRaises(Exception):
             crypto.decrypt(2, c)  # чужим ключом не расшифровать
         self.assertNotEqual(crypto.encrypt(1, "Кофе"), c)  # случайный nonce
+
+    def test_lock_unlock_and_wrong_pin(self):
+        storage.add_expense(1, "Кофе", 250, "Еда", datetime.date(2026, 9, 3))
+        crypto.lock(1)
+        self.assertEqual(crypto.status(1), "locked")
+        with self.assertRaises(crypto.Locked):
+            storage.list_expenses(1)
+        with self.assertRaises(crypto.WrongPin):
+            crypto.unlock(1, "wrong-pass")
+        crypto.unlock(1, "pass100")
+        self.assertEqual(storage.list_expenses(1)[0]["name"], "Кофе")
+        # ключ доступен другому «процессу» через tmpfs-файл
+        crypto.reset_cache()
+        self.assertEqual(crypto.status(1), "unlocked")
+        self.assertEqual(oct(crypto._key_path(1).stat().st_mode & 0o777), "0o600")
+
+    def test_no_secrets_on_disk_without_pin(self):
+        storage.add_expense(1, "Секрет", 999, "Еда", datetime.date(2026, 9, 3))
+        crypto.lock(1)
+        crypto.reset_cache()
+        raw = sqlite3.connect(storage.DB_FILE)
+        blob = " ".join(str(v) for row in raw.execute("SELECT * FROM expenses") for v in row)
+        blob += " ".join(str(v) for row in raw.execute("SELECT * FROM user_keys") for v in row)
+        self.assertNotIn("Секрет", blob)
+        self.assertNotIn("999", blob)
+        self.assertNotIn("pass100", blob)
+        self.assertFalse(list(crypto.UNLOCK_DIR.glob("1.key")))
+
+    def test_change_pin_and_attempts(self):
+        storage.add_expense(1, "Кофе", 250, "Еда", datetime.date(2026, 9, 3))
+        crypto.change_pin(1, "pass100", "newpass1")
+        crypto.lock(1)
+        crypto.unlock(1, "newpass1")
+        self.assertEqual(storage.list_expenses(1)[0]["amount"], 250)
+        crypto.lock(1)
+        for _ in range(crypto.MAX_ATTEMPTS):
+            with self.assertRaises(crypto.WrongPin):
+                crypto.unlock(1, "bad-bad-bad")
+        with self.assertRaises(crypto.TooManyAttempts):
+            crypto.unlock(1, "newpass1")
+        with self.assertRaises(ValueError):
+            crypto.setup_pin(9, "123")  # слишком короткий
+
+    def test_wipe_user(self):
+        storage.add_expense(1, "Кофе", 250, "Еда", datetime.date(2026, 9, 3))
+        storage.wipe_user(1)
+        self.assertEqual(crypto.status(1), "nopin")
+        crypto.setup_pin(1, "another1")
+        self.assertEqual(storage.list_expenses(1), [])
 
     def test_db_has_no_plaintext(self):
         storage.add_expense(5, "Секретная покупка", 1234, "Еда", datetime.date(2026, 9, 3))
@@ -42,20 +93,16 @@ class CryptoTests(unittest.TestCase):
         self.assertNotIn("1234", blob)
         self.assertNotIn("Еда", blob)
         lim = raw.execute("SELECT daily FROM limits").fetchone()[0]
-        self.assertTrue(lim.startswith("enc1:"))
+        self.assertTrue(lim.startswith("enc2:"))
         self.assertEqual(storage.list_expenses(5)[0]["name"], "Секретная покупка")
         self.assertEqual(storage.get_limits(5)["daily"], 2500)
-        self.assertTrue(crypto.KEY_FILE.exists())
-        self.assertEqual(oct(crypto.KEY_FILE.stat().st_mode & 0o777), "0o600")
 
-    def test_legacy_plaintext_rows_get_encrypted(self):
+    def test_legacy_rows_are_removed(self):
         raw = sqlite3.connect(storage.DB_FILE)
-        raw.execute("INSERT INTO expenses(user_id,name,amount,category,date,created_at) VALUES(7,'Старая',10,'Еда','2026-09-01','x')")
+        raw.execute("INSERT INTO expenses(user_id,name,amount,category,date,created_at) VALUES(7,'enc1:xxx','enc1:y','enc1:z','2026-09-01','x')")
         raw.commit(); raw.close()
         storage.init_db()
-        raw = sqlite3.connect(storage.DB_FILE)
-        self.assertTrue(raw.execute("SELECT name FROM expenses").fetchone()[0].startswith("enc1:"))
-        self.assertEqual(storage.list_expenses(7)[0], storage.list_expenses(7)[0] | {"name": "Старая", "amount": 10})
+        self.assertEqual(storage.list_expenses(7), [])
 
     def test_wipe_and_bulk(self):
         added = storage.add_expenses_bulk(1, [{"name": "a", "amount": 1, "category": "Еда", "date": "2026-09-01"},

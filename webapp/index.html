@@ -77,6 +77,18 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .cal-d.in.mute,.cal-d.start.mute,.cal-d.end.mute{color:var(--label)}
 .range-lbl{text-align:center;font-size:15px;color:var(--label2);padding:0 0 10px}
 .range-lbl b{color:var(--label);font-weight:600}
+.lock{padding:40px 20px 30px;text-align:center}
+.lock .big{font-size:56px;margin-bottom:10px}
+.lock h3{font-size:22px;font-weight:700;margin:0 0 8px;letter-spacing:-.02em}
+.lock p{color:var(--label2);font-size:15px;margin:0 auto 18px;max-width:320px;line-height:1.4}
+.pwd{position:relative;margin-bottom:10px}
+.pwd input{width:100%;border:0;background:var(--field);border-radius:14px;font-size:20px;letter-spacing:.08em;text-align:center;padding:14px 48px;outline:none;color:var(--label);caret-color:var(--blue)}
+.pwd input:focus{box-shadow:0 0 0 2px var(--blue) inset}
+.pwd input::placeholder{font-size:16px;letter-spacing:0}
+.pwd button{position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--label2);font-size:13px;font-weight:500}
+.linkbtn{color:var(--blue);font-size:15px;padding:12px}
+.footer{text-align:center;padding:10px 16px 20px}
+.footer button{color:var(--label2);font-size:13px}
 .spin{width:22px;height:22px;border:2.5px solid var(--fill2);border-top-color:var(--blue);border-radius:50%;animation:sp .8s linear infinite;margin:0 auto}
 @keyframes sp{to{transform:rotate(360deg)}}
 
@@ -254,6 +266,7 @@ async function api(path, opts={}) {
   if (tg && tg.initData) headers["X-Telegram-Init-Data"] = tg.initData;
   const r = await fetch(path, Object.assign({}, opts, {headers}));
   let body = null; try { body = await r.json(); } catch(e){}
+  if (r.status === 423 && !opts.noLock) { openLock(body && body.status); throw new Error("Данные закрыты"); }
   if (!r.ok) throw new Error((body && body.error) || ("Ошибка " + r.status));
   return body;
 }
@@ -367,7 +380,15 @@ function render(){
   html += `<section class="section"><div class="section-h"><span>${state.filter ? esc(state.filter) : "Операции"}</span><button data-act="export">Выгрузить</button></div>
     ${txHtml || `<div class="card"><div class="empty"><div class="big">💤</div>Пока пусто. Нажмите «+», чтобы добавить первую трату, или напишите боту: <b>такси 350</b></div></div>`}</section>`;
 
+  html += `<div class="footer"><button data-act="lock">🔒 Закрыть данные</button></div>`;
   document.getElementById("app").innerHTML = html;
+}
+function renderLocked(st){
+  document.getElementById("mainbtn").hidden = true;
+  document.getElementById("subtitle").textContent = "";
+  document.getElementById("app").innerHTML = `<section class="section"><div class="card lock"><div class="big">${st==="nopin"?"🔐":"🔒"}</div>
+    <h3>${st==="nopin"?"Защитите данные":"Данные закрыты"}</h3><p>${st==="nopin"?"Придумайте пароль — им шифруются все ваши записи. Сервер пароль не хранит.":"Введите пароль, чтобы открыть расходы."}</p>
+    <button type="button" class="bigbtn" data-act="openlock">${st==="nopin"?"Создать пароль":"Ввести пароль"}</button></div></section>`;
 }
 const sum = arr => arr.reduce((s,x)=>s+x.amount,0);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -394,6 +415,8 @@ document.getElementById("app").addEventListener("click", e => {
   else if (b.dataset.act === "clear") { state.filter = null; render(); }
   else if (b.dataset.act === "limits") { haptic("light"); openLimits(); }
   else if (b.dataset.act === "export") { haptic("light"); openExport(); }
+  else if (b.dataset.act === "openlock") { haptic("light"); openLock(state.lockStatus); }
+  else if (b.dataset.act === "lock") { haptic("medium"); api("/api/lock", {method:"POST", body:"{}"}).then(()=>{ toast("Данные закрыты"); load(); }).catch(e=>toast(e.message)); }
   else if (b.dataset.id !== undefined) { haptic("light"); openEdit(Number(b.dataset.id)); }
 });
 document.getElementById("addTop").addEventListener("click", () => { haptic("medium"); openAdd(); });
@@ -411,7 +434,7 @@ function openSheet(html, onOpen){
 function closeSheet(){
   sheet.classList.remove("show"); backdrop.classList.remove("show");
   if (tg) tg.BackButton.hide();
-  showMain();
+  if (state.data) showMain();
   sheetOnClose && sheetOnClose(); sheetOnClose = null;
 }
 backdrop.addEventListener("click", closeSheet);
@@ -496,6 +519,47 @@ function openLimits(){
   });
 }
 const val = id => document.getElementById(id).value;
+
+/* ---------- Пароль шифрования ---------- */
+let lockOpen = false;
+function openLock(st){
+  state.lockStatus = st || "locked";
+  if (lockOpen) return; lockOpen = true;
+  const setup = state.lockStatus === "nopin";
+  const pw = (id, ph) => `<div class="pwd"><input id="${id}" type="password" placeholder="${ph}" autocomplete="off" autocapitalize="off" enterkeyhint="${id==="pw2"||!setup?"done":"next"}"><button type="button" data-eye="${id}">Показать</button></div>`;
+  openSheet(`<div class="grab"></div>
+    <div class="sheet-h"><span></span><h2>${setup?"Новый пароль":"Введите пароль"}</h2><span></span></div>
+    <div class="hint">${setup?"От 6 символов, лучше буквы и цифры. Пароль нигде не хранится: если забудете, данные восстановить нельзя.":"Пароль знаете только вы. После ввода данные остаются открытыми на этом сервере до 30 дней без активности."}</div>
+    ${pw("pw1", setup?"Пароль":"Пароль")}${setup?pw("pw2","Повторите пароль"):""}
+    <button type="button" class="bigbtn" id="pwGo">${setup?"Создать и открыть":"Открыть"}</button>
+    ${setup?"":`<div style="text-align:center"><button type="button" class="linkbtn" id="pwForgot">Забыли пароль?</button></div>`}`, () => {
+    sheetOnClose = () => { lockOpen = false; };
+    const p1 = document.getElementById("pw1"); p1.focus({preventScroll:true});
+    sheet.querySelectorAll("[data-eye]").forEach(b => b.onclick = () => { const i = document.getElementById(b.dataset.eye); i.type = i.type === "password" ? "text" : "password"; b.textContent = i.type === "password" ? "Показать" : "Скрыть"; });
+    const go = async () => {
+      if (state.busy) return;
+      const pin = p1.value;
+      try { state.busy = true; document.getElementById("pwGo").disabled = true;
+        if (setup) {
+          const pin2 = document.getElementById("pw2").value;
+          if (pin !== pin2) throw new Error("Пароли не совпадают");
+          await api("/api/pin", {method:"POST", body: JSON.stringify({pin, pin2}), noLock:true});
+        } else await api("/api/unlock", {method:"POST", body: JSON.stringify({pin}), noLock:true});
+        haptic("ok"); closeSheet(); toast(setup ? "Пароль создан, данные зашифрованы" : "Данные открыты"); await load();
+      } catch(e){ haptic("err"); toast(e.message); }
+      finally { state.busy = false; const g = document.getElementById("pwGo"); if (g) g.disabled = false; }
+    };
+    document.getElementById("pwGo").onclick = go;
+    p1.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); setup ? document.getElementById("pw2").focus() : go(); } });
+    if (setup) document.getElementById("pw2").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+    const f = document.getElementById("pwForgot");
+    if (f) f.onclick = () => {
+      const doWipe = async () => { try { await api("/api/forgot", {method:"POST", body: JSON.stringify({confirm:"УДАЛИТЬ"}), noLock:true}); haptic("ok"); closeSheet(); toast("Данные удалены"); await load(); } catch(e){ toast(e.message); } };
+      const q = "Без пароля данные не расшифровать. Удалить все записи и начать заново?";
+      if (tg && tg.showConfirm) tg.showConfirm(q, ok => ok && doWipe()); else if (confirm(q)) doWipe();
+    };
+  });
+}
 
 /* ---------- Чек ---------- */
 const fileInput = document.getElementById("file");
@@ -632,7 +696,11 @@ let toastT; function toast(m){ const t = document.getElementById("toast"); t.tex
 
 /* ---------- Load ---------- */
 async function load(first=true){
-  try { state.data = await api("/api/state"); render(); if (first) showMain(); }
+  try {
+    const d = await api("/api/state", {noLock:true});
+    if (d.locked) { state.data = null; renderLocked(d.status); openLock(d.status); return; }
+    state.data = d; render(); if (first) showMain();
+  }
   catch(e){
     document.getElementById("app").innerHTML = `<section class="section"><div class="card"><div class="empty"><div class="big">🔒</div>${esc(e.message)}</div></div></section>`;
   }

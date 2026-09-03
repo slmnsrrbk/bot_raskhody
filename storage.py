@@ -2,8 +2,8 @@
 
 Оба процесса (main.py и webapp.py) работают с одним файлом data.db; режим WAL
 позволяет читать и писать параллельно. Название, сумма и категория каждой траты и лимиты
-хранятся зашифрованными ключом пользователя (см. crypto.py); в открытом виде — только
-id пользователя и дата (нужна для выборок по периоду).
+хранятся зашифрованными ключом пользователя, который защищён его паролем и не хранится на сервере
+(см. crypto.py); в открытом виде — только id пользователя и дата (нужна для выборок по периоду).
 """
 import datetime
 import hashlib
@@ -54,6 +54,19 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS user_keys (
+    user_id     INTEGER PRIMARY KEY,
+    salt        BLOB NOT NULL,
+    nonce       BLOB NOT NULL,
+    wrapped     BLOB NOT NULL,
+    kdf         TEXT NOT NULL,
+    created_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pin_attempts (
+    user_id     INTEGER PRIMARY KEY,
+    count       INTEGER NOT NULL,
+    first_ts    REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS category_cache (
     name      TEXT PRIMARY KEY,
     category  TEXT NOT NULL
@@ -82,23 +95,12 @@ def connect():
 def init_db():
     with connect() as con:
         con.executescript(SCHEMA)
-    crypto.master_key()  # создаёт .data_key при первом запуске
-    _encrypt_legacy_rows()
-
-
-def _encrypt_legacy_rows():
-    """Записи, сохранённые до включения шифрования, шифруем на месте."""
-    with connect() as con:
-        rows = con.execute("SELECT id, user_id, name, amount, category FROM expenses").fetchall()
-        for r in rows:
-            if not crypto.is_encrypted(r["name"]):
-                con.execute("UPDATE expenses SET name=?, amount=?, category=? WHERE id=?",
-                            (crypto.encrypt(r["user_id"], r["name"]), crypto.encrypt(r["user_id"], r["amount"]),
-                             crypto.encrypt(r["user_id"], r["category"]), r["id"]))
-        for r in con.execute("SELECT user_id, daily, weekly, monthly FROM limits").fetchall():
-            if any(v is not None and not crypto.is_encrypted(v) for v in (r["daily"], r["weekly"], r["monthly"])):
-                con.execute("UPDATE limits SET daily=?, weekly=?, monthly=? WHERE user_id=?",
-                            (*[None if v is None else crypto.encrypt(r["user_id"], v) for v in (r["daily"], r["weekly"], r["monthly"])], r["user_id"]))
+        # Записи старых схем (без пароля пользователя) прочитать нельзя — удаляем.
+        n = con.execute("DELETE FROM expenses WHERE name NOT LIKE 'enc2:%'").rowcount
+        n += con.execute("DELETE FROM limits WHERE daily NOT LIKE 'enc2:%' AND daily IS NOT NULL").rowcount
+        if n:
+            import logging
+            logging.getLogger("storage").warning("Удалено %s записей старого формата шифрования", n)
 
 
 # ---------------------------------------------------------------------------
@@ -309,9 +311,18 @@ def delete_many(user_id: int, ids):
 
 
 def wipe_all():
-    """Удаляет все траты, лимиты и кэш (используется для очистки тестовых данных)."""
+    """Удаляет все траты, лимиты, ключи и кэш (используется для очистки тестовых данных)."""
     with connect() as con:
-        con.executescript("DELETE FROM expenses; DELETE FROM limits; DELETE FROM category_cache; DELETE FROM users;")
+        con.executescript("DELETE FROM expenses; DELETE FROM limits; DELETE FROM category_cache; DELETE FROM users; "
+                          "DELETE FROM user_keys; DELETE FROM pin_attempts;")
+
+
+def wipe_user(user_id: int):
+    """Удаляет все данные и ключ одного пользователя (например, если пароль забыт)."""
+    with connect() as con:
+        con.execute("DELETE FROM expenses WHERE user_id=?", (user_id,))
+        con.execute("DELETE FROM limits WHERE user_id=?", (user_id,))
+    crypto.remove_pin(user_id)
 
 
 # ---------------------------------------------------------------------------

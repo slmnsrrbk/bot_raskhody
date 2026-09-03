@@ -22,6 +22,7 @@ from telegram import (
 )
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -30,6 +31,7 @@ from telegram.ext import (
 )
 
 import ai
+import crypto
 import export
 import storage
 
@@ -52,6 +54,8 @@ CATEGORIES = storage.CATEGORIES
 BTN_TODAY, BTN_WEEK, BTN_MONTH = "Расходы за сегодня", "За 7 дней", "За 30 дней"
 BTN_LIMIT, BTN_DELETE, BTN_APP = "Установить лимит", "🗑 Удалить трату", "📱 Открыть приложение"
 BTN_EXPORT = "📥 Выгрузка"
+BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_MONTH, BTN_LIMIT, BTN_DELETE, BTN_EXPORT, BTN_APP, "🔙 Назад",
+                "Ежедневный лимит", "Еженедельный лимит", "Ежемесячный лимит"}
 
 scheduler = AsyncIOScheduler(timezone=TZ)
 
@@ -165,7 +169,29 @@ def register(update: Update) -> int:
     return u.id
 
 
-def guarded(handler):
+PIN_SETUP_TEXT = (
+    "🔐 Ваши данные шифруются паролем, который знаете только вы. Сервер его не хранит, "
+    "поэтому восстановить забытый пароль невозможно.\n\n"
+    "Придумайте пароль (от 6 символов, лучше буквы и цифры) и отправьте его сообщением — я сразу удалю его из чата."
+)
+PIN_UNLOCK_TEXT = "🔒 Данные закрыты. Введите пароль сообщением — я удалю его из чата."
+
+
+async def ensure_unlocked(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    st = crypto.status(user_id)
+    if st == "unlocked":
+        return True
+    context.user_data["await_pin"] = "setup" if st == "nopin" else "unlock"
+    context.user_data.pop("pin_first", None)
+    msg = update.effective_message
+    if msg and msg.text and msg.text not in BUTTON_TEXTS and not msg.text.startswith("/"):
+        context.user_data["pending"] = msg.text
+    if msg:
+        await msg.reply_text(PIN_SETUP_TEXT if st == "nopin" else PIN_UNLOCK_TEXT)
+    return False
+
+
+def guarded(handler, needs_key=True):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             user_id = register(update)
@@ -173,44 +199,155 @@ def guarded(handler):
             if update.effective_message:
                 await update.effective_message.reply_text("⛔ Этот бот приватный, доступ закрыт.")
             return
-        return await handler(update, context, user_id)
+        if needs_key and not await ensure_unlocked(update, context, user_id):
+            return
+        try:
+            return await handler(update, context, user_id)
+        except (crypto.Locked, crypto.NoPin):
+            await ensure_unlocked(update, context, user_id)
     return wrapper
+
+
+def open_handler(handler):
+    return guarded(handler, needs_key=False)
 
 
 # ---------------------------------------------------------------------------
 # Обработчики
 # ---------------------------------------------------------------------------
-@guarded
+@open_handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
     context.user_data.pop("limit_type", None)
+    st = crypto.status(user_id)
+    tail = limit_text(user_id) if st == "unlocked" else (
+        "🔐 Данные шифруются вашим паролем. Задайте его при первой трате." if st == "nopin"
+        else "🔒 Данные закрыты — введите пароль при следующем действии.")
     await update.message.reply_text(
         f"👋 Привет, {update.effective_user.first_name}! Я помогу вести учёт расходов.\n\n"
         "Просто напишите, например: `вчера хлеб 200` или `такси 350`.\n"
-        "📷 Пришлите фото чека — я распознаю покупки и добавлю их сами.\n\n"
-        f"{limit_text(user_id)}",
+        "📷 Пришлите фото чека — я распознаю покупки и добавлю их сами.\n"
+        "Команды: /pin — сменить пароль, /lock — закрыть данные, /export — таблица Excel.\n\n"
+        f"{tail}",
         reply_markup=main_keyboard(),
         parse_mode="Markdown",
     )
+    if st == "nopin":
+        context.user_data["await_pin"] = "setup"
+        context.user_data.pop("pin_first", None)
+        await update.message.reply_text(PIN_SETUP_TEXT)
 
 
-@guarded
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    parsed = parse_expense(update.message.text)
+# --- пароль шифрования ---
+async def pin_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перехватывает сообщение с паролем, когда бот его ждёт (группа -1)."""
+    mode = context.user_data.get("await_pin")
+    msg = update.message
+    if not mode or not msg or not msg.text:
+        return
+    text = msg.text.strip()
+    if text.startswith("/") or text in BUTTON_TEXTS:
+        return
+    try:
+        await msg.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        user_id = register(update)
+    except PermissionError:
+        raise ApplicationHandlerStop
+    reply = context.bot.send_message
+    try:
+        if mode == "setup":
+            first = context.user_data.get("pin_first")
+            if not first:
+                crypto.validate_pin(text)
+                context.user_data["pin_first"] = text
+                await reply(user_id, "Повторите пароль ещё раз:")
+                raise ApplicationHandlerStop
+            if text != first:
+                context.user_data.pop("pin_first", None)
+                await reply(user_id, "Пароли не совпали. Придумайте пароль заново и отправьте его:")
+                raise ApplicationHandlerStop
+            crypto.setup_pin(user_id, text)
+            await reply(user_id, "✅ Пароль установлен, данные зашифрованы. Запомните его: восстановить пароль нельзя.",
+                        reply_markup=main_keyboard())
+        elif mode == "change":
+            old = context.user_data.get("pin_old")
+            if not old:
+                context.user_data["pin_old"] = text
+                await reply(user_id, "Теперь отправьте новый пароль:")
+                raise ApplicationHandlerStop
+            crypto.change_pin(user_id, old, text)
+            await reply(user_id, "✅ Пароль изменён.")
+        else:
+            crypto.unlock(user_id, text)
+            await reply(user_id, "🔓 Данные открыты.", reply_markup=main_keyboard())
+    except ValueError as e:
+        await reply(user_id, f"⚠️ {e}")
+        raise ApplicationHandlerStop
+    except crypto.WrongPin:
+        context.user_data.pop("pin_old", None)
+        await reply(user_id, "❌ Неверный пароль, попробуйте ещё раз.")
+        raise ApplicationHandlerStop
+    except crypto.TooManyAttempts:
+        await reply(user_id, "⛔ Слишком много неверных попыток. Подождите 15 минут.")
+        raise ApplicationHandlerStop
+    context.user_data.pop("await_pin", None)
+    context.user_data.pop("pin_first", None)
+    context.user_data.pop("pin_old", None)
+    pending = context.user_data.pop("pending", None)
+    if pending:
+        await process_expense(context.bot, user_id, pending)
+    raise ApplicationHandlerStop
+
+
+@open_handler
+async def cmd_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    if crypto.status(user_id) == "nopin":
+        context.user_data["await_pin"] = "setup"
+        context.user_data.pop("pin_first", None)
+        await update.message.reply_text(PIN_SETUP_TEXT)
+    else:
+        context.user_data["await_pin"] = "change"
+        context.user_data.pop("pin_old", None)
+        await update.message.reply_text("Отправьте текущий пароль (сообщение будет удалено):")
+
+
+@open_handler
+async def cmd_lock(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    crypto.lock(user_id)
+    context.user_data.pop("await_pin", None)
+    await update.message.reply_text("🔒 Данные закрыты. Для работы снова понадобится пароль.")
+
+
+@open_handler
+async def cmd_forgot(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Да, удалить всё и начать заново", callback_data="wipe:yes")],
+                               [InlineKeyboardButton("Отмена", callback_data="close")]])
+    await update.message.reply_text(
+        "Без пароля данные расшифровать невозможно. Единственный выход — удалить все ваши записи и задать новый пароль. Удалить?",
+        reply_markup=kb)
+
+
+async def process_expense(bot, user_id: int, text: str):
+    parsed = parse_expense(text)
     if not parsed:
-        await update.message.reply_text("⚠️ Не понял. Пример: `вчера хлеб 200`", parse_mode="Markdown")
+        await bot.send_message(user_id, "⚠️ Не понял. Пример: `вчера хлеб 200`", parse_mode="Markdown")
         return
     name, amount, date = parsed
     category = await in_thread(detect_category, name)
     item = storage.add_expense(user_id, name, amount, category, date)
-
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Отменить", callback_data=f"del:{item['id']}")]])
-    await update.message.reply_text(
-        f"✅ {item['name']} — {fmt(item['amount'])} ({item['category']}) — {item['date']} добавлено.",
-        reply_markup=kb,
-    )
+    await bot.send_message(user_id, f"✅ {item['name']} — {fmt(item['amount'])} ({item['category']}) — {item['date']} добавлено.",
+                           reply_markup=kb)
     status = limit_status(user_id)
     if status:
-        await update.message.reply_text("📊 " + status)
+        await bot.send_message(user_id, "📊 " + status)
+
+
+@guarded
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    await process_expense(context.bot, user_id, update.message.text)
 
 
 @guarded
@@ -390,6 +527,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("Доступ закрыт", show_alert=True)
         return
     data = q.data or ""
+    if data == "wipe:yes":
+        storage.wipe_user(user_id)
+        context.user_data.clear()
+        await q.answer("Удалено")
+        await q.edit_message_text("🗑 Все данные удалены. Отправьте /start, чтобы задать новый пароль.")
+        return
+    if data != "close" and crypto.status(user_id) != "unlocked":
+        await q.answer("Сначала введите пароль", show_alert=True)
+        await ensure_unlocked(update, context, user_id)
+        return
     if data == "close":
         await q.answer()
         await q.edit_message_text("Закрыто.")
@@ -445,6 +592,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 async def _broadcast(app: Application, days: int, title: str, with_advice=False):
     for user_id in storage.users_with_expenses(days, today()):
+        if not crypto.is_unlocked(user_id):
+            continue
         try:
             report, total, _ = build_report(user_id, days)
             if with_advice and total:
@@ -497,7 +646,11 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
     T = filters.TEXT & ~filters.COMMAND
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, pin_gate), group=-1)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("pin", cmd_pin))
+    app.add_handler(CommandHandler("lock", cmd_lock))
+    app.add_handler(CommandHandler("forgot", cmd_forgot))
     app.add_handler(CommandHandler("delete", ask_delete))
     app.add_handler(CommandHandler("undo", delete_last))
     app.add_handler(CommandHandler("export", ask_export))
