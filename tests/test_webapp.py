@@ -24,10 +24,13 @@ class WebAppApiTests(AioHTTPTestCase):
     async def get_application(self):
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
-        webapp.EXPENSES_FILE = base / "expenses.json"
-        webapp.LIMITS_FILE = base / "limits.json"
+        webapp.storage.DB_FILE = base / "t.db"
+        webapp.storage.init_db()
         webapp.DEV_MODE = True
-        webapp.save_expenses([["Кофе", 250, "Еда", "03.09.2026"], ["Такси", 480, "Транспорт", "02.09.2026"]])
+        webapp._buckets.clear()
+        webapp.storage.add_expense(0, "Кофе", 250, "Еда", "03.09.2026")
+        webapp.storage.add_expense(0, "Такси", 480, "Транспорт", "02.09.2026")
+        webapp.storage.add_expense(7, "Чужая", 999, "Еда", "03.09.2026")  # другой пользователь
         return webapp.make_app()
 
     async def tearDownAsync(self):
@@ -37,8 +40,9 @@ class WebAppApiTests(AioHTTPTestCase):
         r = await self.client.get("/api/state")
         self.assertEqual(r.status, 200)
         d = await r.json()
-        self.assertEqual(len(d["expenses"]), 2)
+        self.assertEqual(len(d["expenses"]), 2)  # чужая запись не видна
         self.assertEqual(d["expenses"][0]["name"], "Кофе")  # новее — первым
+        self.assertEqual(r.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(d["expenses"][0]["iso"], "2026-09-03")
         self.assertEqual(d["limits"], {"daily": None, "weekly": None, "monthly": None})
 
@@ -54,7 +58,7 @@ class WebAppApiTests(AioHTTPTestCase):
 
         r = await self.client.delete(f"/api/expenses/{item['id']}")
         self.assertEqual(r.status, 200)
-        self.assertEqual(len(webapp.load_expenses()), 2)
+        self.assertEqual(len(webapp.storage.list_expenses(0)), 2)
 
     async def test_validation(self):
         r = await self.client.post("/api/expenses", json={"name": "x", "amount": "abc"})
@@ -63,6 +67,19 @@ class WebAppApiTests(AioHTTPTestCase):
         self.assertEqual(r.status, 400)
         r = await self.client.delete("/api/expenses/99")
         self.assertEqual(r.status, 404)
+        foreign = webapp.storage.list_expenses(7)[0]["id"]
+        r = await self.client.delete(f"/api/expenses/{foreign}")
+        self.assertEqual(r.status, 404)  # чужую запись удалить нельзя
+        r = await self.client.put(f"/api/expenses/{foreign}", json={"amount": 1})
+        self.assertEqual(r.status, 404)
+
+    async def test_rate_limit(self):
+        webapp.RATE_LIMIT = 3
+        try:
+            statuses = [(await self.client.get("/api/state")).status for _ in range(5)]
+        finally:
+            webapp.RATE_LIMIT = 120
+        self.assertEqual(statuses, [200, 200, 200, 429, 429])
 
     async def test_limits(self):
         r = await self.client.put("/api/limits", json={"daily": "2 500", "weekly": "", "monthly": 80000})

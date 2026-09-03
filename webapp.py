@@ -1,7 +1,7 @@
 """HTTP API и раздача мини-приложения Telegram для бота учёта расходов.
 
-Запускается отдельным процессом рядом с main.py, использует те же файлы
-expenses.json и limits.json. Наружу выходит через HTTPS-прокси (Caddy).
+Отдельный процесс рядом с main.py, общая база data.db (storage.py). Каждый запрос
+подписан Telegram (initData), данные отдаются только их владельцу. Наружу — через nginx/HTTPS.
 """
 import datetime
 import hashlib
@@ -10,13 +10,14 @@ import json
 import logging
 import os
 import re
-import tempfile
 from pathlib import Path
 from urllib.parse import parse_qsl
 
 import pytz
 import requests
 from aiohttp import web
+
+import storage
 
 BASE_DIR = Path(__file__).resolve().parent
 try:
@@ -28,65 +29,30 @@ except ImportError:
 logger = logging.getLogger("webapp")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-CHAD_API_KEY = os.getenv("CHAD_API_KEY") or "chad-9814409421bc4afda8cb736d7d3403f4de4qu6jf"
+CHAD_API_KEY = os.getenv("CHAD_API_KEY", "")
 ALLOWED_USER_IDS = {int(x) for x in re.findall(r"\d+", os.getenv("ALLOWED_USER_IDS", ""))}
 DEV_MODE = os.getenv("WEBAPP_DEV", "") == "1"          # без проверки подписи Telegram (только локально)
 HOST = os.getenv("WEBAPP_HOST", "127.0.0.1")
 PORT = int(os.getenv("WEBAPP_PORT", "8080"))
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Asia/Krasnoyarsk"))
 
-EXPENSES_FILE = BASE_DIR / "expenses.json"
-LIMITS_FILE = BASE_DIR / "limits.json"
 STATIC_DIR = BASE_DIR / "webapp"
-
-CATEGORIES = ["Еда", "Транспорт", "Одежда", "Развлечения", "Другое"]
-DATE_FMT = "%d.%m.%Y"
+CATEGORIES = storage.CATEGORIES
+RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "120"))   # запросов в минуту на пользователя
 CHAD_API_URL = "https://ask.chadgpt.ru/api/public/gpt-4o-mini"
 
 
 # ---------------------------------------------------------------------------
-# Файлы (формат совместим с main.py: список [название, сумма, категория, "ДД.ММ.ГГГГ"])
+# Категория через ChadGPT
 # ---------------------------------------------------------------------------
-def _read_json(path: Path, default):
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return default
-
-
-def _write_json_atomic(path: Path, data):
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
-
-def load_expenses():
-    return _read_json(EXPENSES_FILE, [])
-
-
-def save_expenses(rows):
-    _write_json_atomic(EXPENSES_FILE, rows)
-
-
-def load_limits():
-    return _read_json(LIMITS_FILE, {"daily": None, "weekly": None, "monthly": None})
-
-
-def save_limits(limits):
-    _write_json_atomic(LIMITS_FILE, limits)
-
-
 def detect_category(name: str) -> str:
     if not CHAD_API_KEY:
         return "Другое"
     try:
         r = requests.post(
             CHAD_API_URL,
-            json={
-                "message": f"Определи категорию для траты '{name}' одним словом. Только: {', '.join(CATEGORIES)}.",
-                "api_key": CHAD_API_KEY,
-            },
+            json={"message": f"Определи категорию для траты '{name}' одним словом. Только: {', '.join(CATEGORIES)}.",
+                  "api_key": CHAD_API_KEY},
             timeout=20,
         )
         resp = r.json()
@@ -127,140 +93,147 @@ def validate_init_data(init_data: str):
         return {}
 
 
+def _error(status_cls, message):
+    return status_cls(text=json.dumps({"error": message}, ensure_ascii=False), content_type="application/json")
+
+
+_buckets: dict = {}   # user_id -> [timestamps] за последнюю минуту
+
+
+def rate_limited(user_id: int) -> bool:
+    import time
+    now = time.monotonic()
+    hits = [t for t in _buckets.get(user_id, []) if now - t < 60]
+    hits.append(now)
+    _buckets[user_id] = hits
+    if len(_buckets) > 10000:  # не даём словарю расти бесконечно
+        _buckets.clear()
+    return len(hits) > RATE_LIMIT
+
+
+@web.middleware
+async def security_headers(request: web.Request, handler):
+    resp = await handler(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["X-Frame-Options"] = "ALLOW-FROM https://web.telegram.org"
+    resp.headers["Content-Security-Policy"] = "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"
+    resp.headers["Cache-Control"] = "no-store" if request.path.startswith("/api/") else "no-cache"
+    return resp
+
+
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
     if not request.path.startswith("/api/"):
         return await handler(request)
     if DEV_MODE:
-        request["user"] = {"id": 0, "first_name": "Dev"}
-        return await handler(request)
-    user = validate_init_data(request.headers.get("X-Telegram-Init-Data", ""))
-    if user is None:
-        raise web.HTTPUnauthorized(text=json.dumps({"error": "Откройте приложение через Telegram"}),
-                                   content_type="application/json")
-    if ALLOWED_USER_IDS and user.get("id") not in ALLOWED_USER_IDS:
-        raise web.HTTPForbidden(text=json.dumps({"error": "Доступ только для владельца бота"}),
-                                content_type="application/json")
+        user = {"id": 0, "first_name": "Dev"}
+    else:
+        user = validate_init_data(request.headers.get("X-Telegram-Init-Data", ""))
+        if user is None or not isinstance(user.get("id"), int):
+            raise _error(web.HTTPUnauthorized, "Откройте приложение через Telegram")
+        if ALLOWED_USER_IDS and user["id"] not in ALLOWED_USER_IDS:
+            raise _error(web.HTTPForbidden, "Доступ закрыт")
+    if rate_limited(user["id"]):
+        raise _error(web.HTTPTooManyRequests, "Слишком много запросов, подождите минуту")
+    storage.upsert_user(user["id"], user.get("first_name", ""), user.get("username", ""))
     request["user"] = user
+    request["user_id"] = user["id"]
     return await handler(request)
 
 
 # ---------------------------------------------------------------------------
-# API
+# API — все данные только текущего пользователя
 # ---------------------------------------------------------------------------
 def today() -> datetime.date:
     return datetime.datetime.now(TZ).date()
 
 
-def row_to_item(idx: int, row) -> dict:
-    name, amount, category, date = row[0], row[1], row[2], row[3]
+def parse_amount(value) -> int:
     try:
-        iso = datetime.datetime.strptime(date, DATE_FMT).date().isoformat()
+        amount = int(round(float(str(value).replace(",", ".").replace(" ", "").replace("\u00a0", ""))))
     except ValueError:
-        iso = None
-    return {"id": idx, "name": name, "amount": int(amount), "category": category or "Другое",
-            "date": date, "iso": iso}
+        raise _error(web.HTTPBadRequest, "Сумма должна быть числом")
+    if amount <= 0 or amount > 100_000_000:
+        raise _error(web.HTTPBadRequest, "Сумма должна быть больше нуля")
+    return amount
 
 
 def parse_date(value) -> str:
-    """Принимает 'ГГГГ-ММ-ДД' или 'ДД.ММ.ГГГГ', возвращает 'ДД.ММ.ГГГГ'."""
     if not value:
-        return today().strftime(DATE_FMT)
-    for fmt in ("%Y-%m-%d", DATE_FMT):
-        try:
-            return datetime.datetime.strptime(str(value), fmt).strftime(DATE_FMT)
-        except ValueError:
-            continue
-    raise web.HTTPBadRequest(text=json.dumps({"error": "Неверная дата"}), content_type="application/json")
+        return today().isoformat()
+    try:
+        return storage.to_iso(value)
+    except ValueError:
+        raise _error(web.HTTPBadRequest, "Неверная дата")
 
 
 async def api_state(request: web.Request):
-    rows = load_expenses()
-    items = [row_to_item(i, r) for i, r in enumerate(rows) if isinstance(r, list) and len(r) >= 4]
-    items.sort(key=lambda x: (x["iso"] or "", x["id"]), reverse=True)
+    uid = request["user_id"]
     return web.json_response({
         "today": today().isoformat(),
         "categories": CATEGORIES,
-        "limits": load_limits(),
-        "expenses": items,
-        "user": request["user"],
+        "limits": storage.get_limits(uid),
+        "expenses": storage.list_expenses(uid),
+        "user": {"id": uid, "first_name": request["user"].get("first_name", "")},
     })
 
 
 async def api_add(request: web.Request):
+    uid = request["user_id"]
     body = await request.json()
     name = str(body.get("name", "")).strip()
     if not name:
-        raise web.HTTPBadRequest(text=json.dumps({"error": "Укажите название"}), content_type="application/json")
-    try:
-        amount = int(round(float(str(body.get("amount", "")).replace(",", ".").replace(" ", ""))))
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        raise web.HTTPBadRequest(text=json.dumps({"error": "Сумма должна быть числом больше нуля"}),
-                                 content_type="application/json")
+        raise _error(web.HTTPBadRequest, "Укажите название")
+    amount = parse_amount(body.get("amount"))
+    date = parse_date(body.get("date"))
     category = body.get("category") or ""
     if category not in CATEGORIES:
         category = await request.loop.run_in_executor(None, detect_category, name)
-    date = parse_date(body.get("date"))
-    rows = load_expenses()
-    row = [name[:1].upper() + name[1:], amount, category, date]
-    rows.append(row)
-    save_expenses(rows)
-    return web.json_response(row_to_item(len(rows) - 1, row), status=201)
-
-
-def _find_row(rows, idx: int):
-    if idx < 0 or idx >= len(rows):
-        raise web.HTTPNotFound(text=json.dumps({"error": "Запись не найдена"}), content_type="application/json")
-    return rows[idx]
+    return web.json_response(storage.add_expense(uid, name, amount, category, date), status=201)
 
 
 async def api_update(request: web.Request):
-    idx = int(request.match_info["id"])
+    uid = request["user_id"]
+    expense_id = int(request.match_info["id"])
+    if not storage.get_expense(uid, expense_id):
+        raise _error(web.HTTPNotFound, "Запись не найдена")
     body = await request.json()
-    rows = load_expenses()
-    row = _find_row(rows, idx)
-    if "name" in body and str(body["name"]).strip():
-        row[0] = str(body["name"]).strip()
+    fields = {}
+    if "name" in body:
+        fields["name"] = str(body["name"])
     if "amount" in body:
-        try:
-            row[1] = int(round(float(str(body["amount"]).replace(",", "."))))
-        except ValueError:
-            raise web.HTTPBadRequest(text=json.dumps({"error": "Неверная сумма"}), content_type="application/json")
-    if body.get("category") in CATEGORIES:
-        row[2] = body["category"]
+        fields["amount"] = parse_amount(body["amount"])
+    if "category" in body:
+        fields["category"] = body["category"]
     if "date" in body:
-        row[3] = parse_date(body["date"])
-    save_expenses(rows)
-    return web.json_response(row_to_item(idx, row))
+        fields["date"] = parse_date(body["date"])
+    return web.json_response(storage.update_expense(uid, expense_id, **fields))
 
 
 async def api_delete(request: web.Request):
-    idx = int(request.match_info["id"])
-    rows = load_expenses()
-    _find_row(rows, idx)
-    rows.pop(idx)
-    save_expenses(rows)
-    return web.json_response({"ok": True})
+    uid = request["user_id"]
+    item = storage.delete_expense(uid, int(request.match_info["id"]))
+    if not item:
+        raise _error(web.HTTPNotFound, "Запись не найдена")
+    return web.json_response({"ok": True, "deleted": item})
 
 
 async def api_limits(request: web.Request):
+    uid = request["user_id"]
     body = await request.json()
-    limits = load_limits()
+    values = {}
     for key in ("daily", "weekly", "monthly"):
         if key in body:
             val = body[key]
             if val in (None, "", 0, "0"):
-                limits[key] = None
+                values[key] = None
             else:
                 try:
-                    limits[key] = int(float(str(val).replace(" ", "")))
+                    values[key] = int(float(str(val).replace(" ", "").replace("\u00a0", "")))
                 except ValueError:
-                    raise web.HTTPBadRequest(text=json.dumps({"error": f"Неверный лимит {key}"}),
-                                             content_type="application/json")
-    save_limits(limits)
-    return web.json_response(limits)
+                    raise _error(web.HTTPBadRequest, "Лимит должен быть числом")
+    return web.json_response(storage.set_limits(uid, **values))
 
 
 async def index(request: web.Request):
@@ -272,7 +245,7 @@ async def health(request: web.Request):
 
 
 def make_app() -> web.Application:
-    app = web.Application(middlewares=[auth_middleware])
+    app = web.Application(middlewares=[security_headers, auth_middleware])
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/api/state", api_state)
@@ -288,5 +261,6 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if not TELEGRAM_TOKEN and not DEV_MODE:
         raise SystemExit("TELEGRAM_TOKEN не задан: он нужен для проверки подписи Telegram Mini App")
+    storage.init_db()
     logger.info("Mini App API на http://%s:%s (dev=%s)", HOST, PORT, DEV_MODE)
     web.run_app(make_app(), host=HOST, port=PORT, print=None)

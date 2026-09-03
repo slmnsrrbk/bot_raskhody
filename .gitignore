@@ -20,3 +20,9 @@ __pycache__/
 # macOS
 .DS_Store
 __MACOSX/
+
+# База данных бота
+data.db
+data.db-wal
+data.db-shm
+*.imported
