@@ -77,6 +77,20 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .cal-d.in.mute,.cal-d.start.mute,.cal-d.end.mute{color:var(--label)}
 .range-lbl{text-align:center;font-size:15px;color:var(--label2);padding:0 0 10px}
 .range-lbl b{color:var(--label);font-weight:600}
+/* свайп по строке (iOS) */
+.sw{position:relative;overflow:hidden;touch-action:pan-y;background:var(--card)}
+.sw + .sw .sw-c::before{content:"";position:absolute;left:64px;right:0;top:0;height:.5px;background:var(--sep)}
+.sw-c{position:relative;z-index:1;background:var(--card);will-change:transform}
+.sw.anim .sw-c{transition:transform .28s cubic-bezier(.2,.8,.2,1)}
+.sw-c .row + .row::before{display:none}
+.sw-side{position:absolute;top:0;bottom:0;display:flex;z-index:0}
+.sw-left{left:0}.sw-right{right:0}
+.sw-btn{width:92px;height:100%;color:#fff;font-size:15px;font-weight:500;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px}
+.sw-btn svg{width:22px;height:22px}
+.sw-btn.edit{background:var(--blue)}.sw-btn.del{background:var(--red)}
+.sw.full .sw-btn.del{width:100%}
+.toast.action{pointer-events:auto;display:flex;align-items:center;gap:14px;white-space:nowrap}
+.toast.action button{color:var(--blue);font-weight:600;font-size:14px;filter:brightness(1.4)}
 .lock{padding:40px 20px 30px;text-align:center}
 .lock .big{font-size:56px;margin-bottom:10px}
 .lock h3{font-size:22px;font-weight:700;margin:0 0 8px;letter-spacing:-.02em}
@@ -373,10 +387,13 @@ function render(){
   const groups = {}; list.forEach(x => (groups[x.iso] ||= []).push(x));
   const keys = Object.keys(groups).sort().reverse();
   const txHtml = keys.map(k => `<div class="group"><div class="date-h">${dateLabel(k, d.today)} · <span class="num">${fmt(sum(groups[k]))}</span></div><div class="card">${
-    groups[k].map(x => { const m = catOf(x.category); return `<button class="row" data-id="${x.id}">
+    groups[k].map(x => { const m = catOf(x.category); return `<div class="sw" data-sw="${x.id}">
+      <div class="sw-side sw-left"><button type="button" class="sw-btn edit" data-edit="${x.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>Изменить</button></div>
+      <div class="sw-side sw-right"><button type="button" class="sw-btn del" data-del="${x.id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>Удалить</button></div>
+      <div class="sw-c"><button class="row" data-id="${x.id}">
       <div class="ico" style="background:${m.c}">${m.e}</div>
       <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}</div></div>
-      <div class="amt num">−${fmt(x.amount)}</div></button>`; }).join("")}</div></div>`).join("");
+      <div class="amt num">−${fmt(x.amount)}</div></button></div></div>`; }).join("")}</div></div>`).join("");
   html += `<section class="section"><div class="section-h"><span>${state.filter ? esc(state.filter) : "Операции"}</span><button data-act="export">Выгрузить</button></div>
     ${txHtml || `<div class="card"><div class="empty"><div class="big">💤</div>Пока пусто. Нажмите «+», чтобы добавить первую трату, или напишите боту: <b>такси 350</b></div></div>`}</section>`;
 
@@ -411,6 +428,10 @@ setPeriod(state.period, false);
 /* ---------- Clicks ---------- */
 document.getElementById("app").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
+  if (swipe.moved) { swipe.moved = false; return; }          // это был свайп, а не тап
+  if (b.dataset.edit !== undefined) { haptic("light"); closeSwipe(); openEdit(Number(b.dataset.edit)); return; }
+  if (b.dataset.del !== undefined) { haptic("medium"); deleteWithUndo(Number(b.dataset.del)); return; }
+  if (swipe.openEl) { const inOpen = swipe.openEl.contains(b); closeSwipe(); if (inOpen) return; }
   if (b.dataset.cat !== undefined) { haptic("light"); state.filter = state.filter === b.dataset.cat ? null : b.dataset.cat; render(); }
   else if (b.dataset.act === "clear") { state.filter = null; render(); }
   else if (b.dataset.act === "limits") { haptic("light"); openLimits(); }
@@ -421,6 +442,71 @@ document.getElementById("app").addEventListener("click", e => {
 });
 document.getElementById("addTop").addEventListener("click", () => { haptic("medium"); openAdd(); });
 document.getElementById("mainbtn").addEventListener("click", () => openAdd());
+
+/* ---------- Свайп по строке ---------- */
+const SW_W = 92;
+const swipe = { el:null, content:null, x0:0, y0:0, base:0, pos:0, dragging:false, moved:false, openEl:null, ptr:null };
+function swPos(el, x, anim){ el.classList.toggle("anim", !!anim); el.querySelector(".sw-c").style.transform = x ? `translateX(${x}px)` : ""; el.dataset.pos = x; }
+function closeSwipe(){ if (swipe.openEl) { swPos(swipe.openEl, 0, true); swipe.openEl.classList.remove("full"); swipe.openEl = null; } }
+const appEl = document.getElementById("app");
+appEl.addEventListener("pointerdown", e => {
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  const el = e.target.closest(".sw"); 
+  if (!el) { if (swipe.openEl && !e.target.closest(".sheet")) closeSwipe(); return; }
+  if (swipe.openEl && swipe.openEl !== el) closeSwipe();
+  swipe.el = el; swipe.content = el.querySelector(".sw-c"); swipe.x0 = e.clientX; swipe.y0 = e.clientY;
+  swipe.base = Number(el.dataset.pos || 0); swipe.pos = swipe.base; swipe.dragging = false; swipe.moved = false; swipe.ptr = e.pointerId;
+}, {passive:true});
+appEl.addEventListener("pointermove", e => {
+  if (!swipe.el || e.pointerId !== swipe.ptr) return;
+  const dx = e.clientX - swipe.x0, dy = e.clientY - swipe.y0;
+  if (!swipe.dragging) {
+    if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.2) { swipe.dragging = true; swipe.moved = true; try { swipe.el.setPointerCapture(e.pointerId); } catch(err){} }
+    else if (Math.abs(dy) > 8) { swipe.el = null; return; }
+    else return;
+  }
+  let x = swipe.base + dx;
+  const w = swipe.el.clientWidth;
+  if (x > SW_W) x = SW_W + (x - SW_W) * 0.25;                 // резинка справа
+  if (x < -w * 0.62) { swipe.el.classList.add("full"); } else swipe.el.classList.remove("full");
+  swipe.pos = x; swPos(swipe.el, x, false);
+}, {passive:true});
+function swipeEnd(e){
+  if (!swipe.el || e.pointerId !== swipe.ptr) return;
+  const el = swipe.el, x = swipe.pos, w = el.clientWidth;
+  swipe.el = null;
+  if (!swipe.dragging) return;
+  if (x < -w * 0.62) {                                         // длинный свайп — удалить
+    haptic("medium"); swPos(el, -w, true); el.classList.remove("full");
+    setTimeout(() => deleteWithUndo(Number(el.dataset.sw)), 200);
+    return;
+  }
+  if (x < -SW_W * 0.45) { swPos(el, -SW_W, true); swipe.openEl = el; haptic("light"); }
+  else if (x > SW_W * 0.45) { swPos(el, SW_W, true); swipe.openEl = el; haptic("light"); }
+  else { swPos(el, 0, true); if (swipe.openEl === el) swipe.openEl = null; }
+}
+appEl.addEventListener("pointerup", swipeEnd, {passive:true});
+appEl.addEventListener("pointercancel", swipeEnd, {passive:true});
+
+let toastT2;
+function toastAction(msg, label, fn){
+  const t = document.getElementById("toast");
+  t.innerHTML = `<span>${esc(msg)}</span><button type="button" id="toastBtn">${esc(label)}</button>`;
+  t.classList.add("show", "action"); clearTimeout(toastT); clearTimeout(toastT2);
+  document.getElementById("toastBtn").onclick = () => { clearTimeout(toastT2); t.classList.remove("show", "action"); fn(); };
+  toastT2 = setTimeout(() => t.classList.remove("show", "action"), 5000);
+}
+async function deleteWithUndo(id){
+  const item = state.data && state.data.expenses.find(x => x.id === id); if (!item) return;
+  try {
+    await api("/api/expenses/" + id, {method:"DELETE"});
+    swipe.openEl = null; await load(false);
+    toastAction(`Удалено: ${item.name}`, "Вернуть", async () => {
+      try { await api("/api/expenses", {method:"POST", body: JSON.stringify({name: item.name, amount: item.amount, category: item.category, date: item.iso})}); haptic("ok"); toast("Возвращено"); await load(false); }
+      catch(e){ toast(e.message); }
+    });
+  } catch(e){ haptic("err"); toast(e.message); await load(false); }
+}
 
 /* ---------- Sheet ---------- */
 const sheet = document.getElementById("sheet"), backdrop = document.getElementById("backdrop");
@@ -692,7 +778,7 @@ function openExport(){
   });
 }
 function setBusy(b){ state.busy = b; const s = document.getElementById("save"); if (s) s.disabled = b; }
-let toastT; function toast(m){ const t = document.getElementById("toast"); t.textContent = m; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(()=>t.classList.remove("show"), 2200); }
+let toastT; function toast(m){ const t = document.getElementById("toast"); t.classList.remove("action"); t.textContent = m; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(()=>t.classList.remove("show"), 2200); }
 
 /* ---------- Load ---------- */
 async function load(first=true){
