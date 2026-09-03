@@ -1,0 +1,22 @@
+# Секреты и локальные данные — никогда не коммитить
+.env
+credentials.json
+*.pem
+id_rsa*
+id_ed25519*
+
+# Состояние бота
+limits.json
+data/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.save
+*.swp
+
+# macOS
+.DS_Store
+__MACOSX/

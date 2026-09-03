@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram-бот учёта расходов (bot_raskhody)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/bot
+EnvironmentFile=/root/bot/.env
+ExecStart=/root/bot/venv/bin/python /root/bot/main.py
+Restart=always
+RestartSec=5
+# Логи: journalctl -u bot_raskhody -f
+
+[Install]
+WantedBy=multi-user.target

@@ -1,27 +1,41 @@
-name: Deploy Python Project to Server
+name: Deploy bot to server
 
 on:
   push:
-    branches:
-      - main  # Основная ветка для деплоя
+    branches: [new-branch, main]
+  workflow_dispatch:
 
 jobs:
-  deploy:
+  check:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m py_compile main.py
+      - run: python -m unittest discover -s tests -v
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    # Деплой запускается только если в репозитории заданы secrets SSH_PRIVATE_KEY и SERVER_HOST
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up SSH
-        uses: webfactory/ssh-agent@0.5.3
+        uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Deploy to server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER || 'root' }}
+          APP_DIR: ${{ vars.APP_DIR || '/root/bot' }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          ssh -o StrictHostKeyChecking=no root@79.174.81.57 << EOF
-            cd /root/bot
-            git pull origin main
-            sudo systemctl restart bot_raskhody.service
-          EOF
+          ssh -o StrictHostKeyChecking=accept-new "$SERVER_USER@$SERVER_HOST" \
+            "APP_DIR='$APP_DIR' BRANCH='$BRANCH' bash -s" < deploy/deploy.sh
