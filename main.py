@@ -385,8 +385,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
         return
     wait = await msg.reply_text("🎙 Слушаю…")
     try:
-        f = await media.get_file()
-        data = bytes(await f.download_as_bytearray())
+        f = await media.get_file(read_timeout=30)
+        data = bytes(await f.download_as_bytearray(read_timeout=90, connect_timeout=20))
     except Exception as e:  # noqa: BLE001
         logger.warning("Не удалось скачать голосовое: %s", e)
         await wait.edit_text("Не удалось получить голосовое, попробуйте ещё раз.")
@@ -509,7 +509,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
         else:
             await wait.edit_text("Пришлите чек как фото.")
             return
-        data = bytes(await f.download_as_bytearray())
+        data = bytes(await f.download_as_bytearray(read_timeout=90, connect_timeout=20))
     except Exception as e:  # noqa: BLE001
         logger.warning("Не удалось скачать фото: %s", e)
         await wait.edit_text("Не удалось получить фото, попробуйте ещё раз.")
@@ -708,7 +708,12 @@ async def post_shutdown(app: Application):
 
 
 def build_app(token: str) -> Application:
-    app = Application.builder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
+    app = (
+        Application.builder().token(token)
+        # скачивание голосовых/фото и отправка файлов идут дольше 5 с по умолчанию
+        .connect_timeout(20).read_timeout(60).write_timeout(60).pool_timeout(20)
+        .post_init(post_init).post_shutdown(post_shutdown).build()
+    )
     T = filters.TEXT & ~filters.COMMAND
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, category_gate), group=-1)
     app.add_handler(CommandHandler("start", start))
