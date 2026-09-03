@@ -68,7 +68,7 @@ jobs:
         run: |
           echo "::add-mask::$TELEGRAM_TOKEN"
           { printf 'TELEGRAM_TOKEN=%s\n' "$TELEGRAM_TOKEN"; [ -n "$CHAD_API_KEY" ] && printf 'CHAD_API_KEY=%s\n' "$CHAD_API_KEY"; [ -n "$POLZA_API_KEY" ] && printf 'POLZA_API_KEY=%s\n' "$POLZA_API_KEY"; [ -n "$PROVERKACHEKA_TOKEN" ] && printf 'PROVERKACHEKA_TOKEN=%s\n' "$PROVERKACHEKA_TOKEN"; printf 'WEBAPP_URL=https://%s\n' "$WEBAPP_DOMAIN"; } \
-            | sshpass -e ssh $SSH_OPTS "root@$HOST" 'cat > /root/bot/.env && chmod 600 /root/bot/.env && echo ".env записан"'
+            | sshpass -e ssh $SSH_OPTS "root@$HOST" 'cat > /root/bot/.env.tmp && chmod 600 /root/bot/.env.tmp && mv -f /root/bot/.env.tmp /root/bot/.env && echo ".env записан"'
 
       - name: Restart bot
         if: env.ACTION == 'install' || env.ACTION == 'restart'
