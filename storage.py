@@ -34,7 +34,13 @@ CREATE TABLE IF NOT EXISTS users (
     first_name  TEXT,
     username    TEXT,
     created_at  TEXT NOT NULL,
-    last_seen   TEXT NOT NULL
+    last_seen   TEXT NOT NULL,
+    blocked     INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS user_days (
+    user_id     INTEGER NOT NULL,
+    day         TEXT NOT NULL,
+    PRIMARY KEY (user_id, day)
 );
 CREATE TABLE IF NOT EXISTS expenses (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,6 +100,9 @@ def init_db():
         cols = {r[1] for r in con.execute("PRAGMA table_info(expenses)").fetchall()}
         if "note" not in cols:                      # база, созданная до появления заметок
             con.execute("ALTER TABLE expenses ADD COLUMN note TEXT")
+        ucols = {r[1] for r in con.execute("PRAGMA table_info(users)").fetchall()}
+        if "blocked" not in ucols:
+            con.execute("ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
         # Записи, зашифрованные другой схемой (другим ключом), прочитать нельзя — удаляем.
         pat = crypto.PREFIX + "%"
         n = con.execute("DELETE FROM expenses WHERE name LIKE 'enc%' AND name NOT LIKE ?", (pat,)).rowcount
@@ -175,14 +184,70 @@ def to_display(iso: str) -> str:
 # ---------------------------------------------------------------------------
 # Пользователи
 # ---------------------------------------------------------------------------
-def upsert_user(user_id: int, first_name: str = "", username: str = ""):
+def upsert_user(user_id: int, first_name: str = "", username: str = "", day: datetime.date = None):
+    """Регистрирует/обновляет пользователя и отмечает день активности (для статистики)."""
     now = _now()
+    day = (day or datetime.date.today()).isoformat()
     with connect() as con:
         con.execute(
             """INSERT INTO users(id, first_name, username, created_at, last_seen) VALUES(?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET first_name=excluded.first_name, username=excluded.username, last_seen=excluded.last_seen""",
             (user_id, first_name or "", username or "", now, now),
         )
+        con.execute("INSERT OR IGNORE INTO user_days(user_id, day) VALUES(?,?)", (user_id, day))
+
+
+def is_blocked(user_id: int) -> bool:
+    with connect() as con:
+        r = con.execute("SELECT blocked FROM users WHERE id=?", (user_id,)).fetchone()
+        return bool(r and r["blocked"])
+
+
+def set_blocked(user_id: int, blocked: bool) -> bool:
+    with connect() as con:
+        n = con.execute("UPDATE users SET blocked=? WHERE id=?", (1 if blocked else 0, user_id)).rowcount
+    return n > 0
+
+
+def admin_overview(today: datetime.date = None) -> dict:
+    """Статистика для владельца: только метаданные, без содержимого трат."""
+    today = today or datetime.date.today()
+    d7, d30 = (today - datetime.timedelta(days=6)).isoformat(), (today - datetime.timedelta(days=29)).isoformat()
+    t = today.isoformat()
+    with connect() as con:
+        total = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        blocked = con.execute("SELECT COUNT(*) FROM users WHERE blocked=1").fetchone()[0]
+        active_today = con.execute("SELECT COUNT(DISTINCT user_id) FROM user_days WHERE day=?", (t,)).fetchone()[0]
+        active_7 = con.execute("SELECT COUNT(DISTINCT user_id) FROM user_days WHERE day>=?", (d7,)).fetchone()[0]
+        active_30 = con.execute("SELECT COUNT(DISTINCT user_id) FROM user_days WHERE day>=?", (d30,)).fetchone()[0]
+        visits_7 = con.execute("SELECT COUNT(*) FROM user_days WHERE day>=?", (d7,)).fetchone()[0]
+        daily = con.execute(
+            "SELECT COUNT(DISTINCT user_id) AS n FROM user_days WHERE day>=? GROUP BY user_id HAVING COUNT(*)>=6", (d7,)
+        ).fetchall()
+        new_7 = con.execute("SELECT COUNT(*) FROM users WHERE substr(created_at,1,10)>=?", (d7,)).fetchone()[0]
+        expenses_total = con.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
+        expenses_7 = con.execute("SELECT COUNT(*) FROM expenses WHERE date>=?", (d7,)).fetchone()[0]
+        per_day = {r["day"]: r["n"] for r in con.execute(
+            "SELECT day, COUNT(DISTINCT user_id) AS n FROM user_days WHERE day>=? GROUP BY day", (d7,))}
+        users = []
+        for r in con.execute("""
+            SELECT u.id, u.first_name, u.username, u.created_at, u.last_seen, u.blocked,
+                   (SELECT COUNT(*) FROM expenses e WHERE e.user_id=u.id) AS n_exp,
+                   (SELECT MAX(date) FROM expenses e WHERE e.user_id=u.id) AS last_exp,
+                   (SELECT COUNT(*) FROM user_days d WHERE d.user_id=u.id AND d.day>=?) AS days_30
+            FROM users u ORDER BY u.last_seen DESC""", (d30,)):
+            users.append({"id": r["id"], "first_name": r["first_name"] or "", "username": r["username"] or "",
+                          "created_at": r["created_at"], "last_seen": r["last_seen"], "blocked": bool(r["blocked"]),
+                          "expenses": r["n_exp"], "last_expense": r["last_exp"], "days_30": r["days_30"]})
+    days = [(today - datetime.timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+    return {
+        "today": t,
+        "stats": {"total": total, "blocked": blocked, "active_today": active_today, "active_7": active_7, "active_30": active_30,
+                  "daily_users": len(daily), "avg_daily_7": round(visits_7 / 7, 1), "new_7": new_7,
+                  "expenses_total": expenses_total, "expenses_7": expenses_7},
+        "series": [{"day": d, "n": per_day.get(d, 0)} for d in days],
+        "users": users,
+    }
 
 
 def all_user_ids():

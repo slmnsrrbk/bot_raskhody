@@ -161,7 +161,9 @@ def register(update: Update) -> int:
     u = update.effective_user
     if ALLOWED_USER_IDS and u.id not in ALLOWED_USER_IDS:
         raise PermissionError
-    storage.upsert_user(u.id, u.first_name or "", u.username or "")
+    if u.id != OWNER_ID and storage.is_blocked(u.id):
+        raise PermissionError
+    storage.upsert_user(u.id, u.first_name or "", u.username or "", today())
     if storage.legacy_pending():
         owner = OWNER_ID or u.id
         n = storage.migrate_legacy(owner)
@@ -176,7 +178,7 @@ def guarded(handler):
             user_id = register(update)
         except PermissionError:
             if update.effective_message:
-                await update.effective_message.reply_text("⛔ Этот бот приватный, доступ закрыт.")
+                await update.effective_message.reply_text("⛔ Доступ к боту закрыт.")
             return
         return await handler(update, context, user_id)
     return wrapper
@@ -409,6 +411,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
         return
     await wait.edit_text(f"🎙 Услышал: «{text[:500]}»")
     await process_expense(context.bot, user_id, text, context, spoken=True)
+
+
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/id — Telegram ID пользователя (нужен, чтобы указать OWNER_ID для админки)."""
+    u = update.effective_user
+    await update.message.reply_text(f"Ваш Telegram ID: `{u.id}`", parse_mode="Markdown")
 
 
 @guarded
@@ -734,6 +742,7 @@ def build_app(token: str) -> Application:
     T = filters.TEXT & ~filters.COMMAND
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, category_gate), group=-1)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("id", whoami))
     app.add_handler(CommandHandler("delete", ask_delete))
     app.add_handler(CommandHandler("undo", delete_last))
     app.add_handler(CommandHandler("export", ask_export))

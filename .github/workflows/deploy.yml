@@ -22,6 +22,7 @@ jobs:
       CHAD_API_KEY: ${{ secrets.CHAD_API_KEY }}
       POLZA_API_KEY: ${{ secrets.POLZA_API_KEY }}
       PROVERKACHEKA_TOKEN: ${{ secrets.PROVERKACHEKA_TOKEN }}
+      OWNER_ID: ${{ secrets.OWNER_ID }}
       SSH_OPTS: -o StrictHostKeyChecking=no -o ConnectTimeout=20
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +68,7 @@ jobs:
         if: env.ACTION == 'install' && env.TELEGRAM_TOKEN != ''
         run: |
           echo "::add-mask::$TELEGRAM_TOKEN"
-          { printf 'TELEGRAM_TOKEN=%s\n' "$TELEGRAM_TOKEN"; [ -n "$CHAD_API_KEY" ] && printf 'CHAD_API_KEY=%s\n' "$CHAD_API_KEY"; [ -n "$POLZA_API_KEY" ] && printf 'POLZA_API_KEY=%s\n' "$POLZA_API_KEY"; [ -n "$PROVERKACHEKA_TOKEN" ] && printf 'PROVERKACHEKA_TOKEN=%s\n' "$PROVERKACHEKA_TOKEN"; printf 'WEBAPP_URL=https://%s\n' "$WEBAPP_DOMAIN"; } \
+          { printf 'TELEGRAM_TOKEN=%s\n' "$TELEGRAM_TOKEN"; [ -n "$CHAD_API_KEY" ] && printf 'CHAD_API_KEY=%s\n' "$CHAD_API_KEY"; [ -n "$POLZA_API_KEY" ] && printf 'POLZA_API_KEY=%s\n' "$POLZA_API_KEY"; [ -n "$PROVERKACHEKA_TOKEN" ] && printf 'PROVERKACHEKA_TOKEN=%s\n' "$PROVERKACHEKA_TOKEN"; [ -n "$OWNER_ID" ] && printf 'OWNER_ID=%s\n' "$OWNER_ID"; printf 'WEBAPP_URL=https://%s\n' "$WEBAPP_DOMAIN"; } \
             | sshpass -e ssh $SSH_OPTS "root@$HOST" 'cat > /root/bot/.env.tmp && chmod 600 /root/bot/.env.tmp && mv -f /root/bot/.env.tmp /root/bot/.env && echo ".env записан"'
 
       - name: Restart bot

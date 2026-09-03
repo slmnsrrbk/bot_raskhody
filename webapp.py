@@ -35,6 +35,11 @@ logger = logging.getLogger("webapp")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 ALLOWED_USER_IDS = {int(x) for x in re.findall(r"\d+", os.getenv("ALLOWED_USER_IDS", ""))}
+OWNER_ID = int(os.getenv("OWNER_ID") or 0)          # владелец: видит админку и управляет доступом
+
+
+def is_admin(uid: int) -> bool:
+    return uid == OWNER_ID if OWNER_ID else (DEV_MODE and uid == 0)
 DEV_MODE = os.getenv("WEBAPP_DEV", "") == "1"          # без проверки подписи Telegram (только локально)
 HOST = os.getenv("WEBAPP_HOST", "127.0.0.1")
 PORT = int(os.getenv("WEBAPP_PORT", "8080"))
@@ -120,7 +125,9 @@ async def auth_middleware(request: web.Request, handler):
             raise _error(web.HTTPForbidden, "Доступ закрыт")
     if rate_limited(user["id"]):
         raise _error(web.HTTPTooManyRequests, "Слишком много запросов, подождите минуту")
-    storage.upsert_user(user["id"], user.get("first_name", ""), user.get("username", ""))
+    if not is_admin(user["id"]) and storage.is_blocked(user["id"]):
+        raise _error(web.HTTPForbidden, "Доступ закрыт администратором")
+    storage.upsert_user(user["id"], user.get("first_name", ""), user.get("username", ""), today())
     request["user"] = user
     request["user_id"] = user["id"]
     return await handler(request)
@@ -159,8 +166,32 @@ async def api_state(request: web.Request):
         "categories": storage.all_categories(uid),
         "limits": storage.get_limits(uid),
         "expenses": storage.list_expenses(uid),
-        "user": {"id": uid, "first_name": request["user"].get("first_name", "")},
+        "user": {"id": uid, "first_name": request["user"].get("first_name", ""), "is_admin": is_admin(uid)},
     })
+
+
+# --- админка владельца: только метаданные, содержимое трат остаётся зашифрованным ---
+def _require_admin(request: web.Request):
+    if not is_admin(request["user_id"]):
+        raise _error(web.HTTPForbidden, "Только для владельца")
+
+
+async def api_admin_overview(request: web.Request):
+    _require_admin(request)
+    data = await asyncio.get_running_loop().run_in_executor(None, storage.admin_overview, today())
+    data["owner_id"] = request["user_id"]
+    return web.json_response(data)
+
+
+async def api_admin_block(request: web.Request):
+    _require_admin(request)
+    target = int(request.match_info["id"])
+    if target == request["user_id"]:
+        raise _error(web.HTTPBadRequest, "Нельзя закрыть доступ самому себе")
+    body = await request.json()
+    if not storage.set_blocked(target, bool(body.get("blocked"))):
+        raise _error(web.HTTPNotFound, "Пользователь не найден")
+    return web.json_response({"id": target, "blocked": bool(body.get("blocked"))})
 
 
 async def api_add(request: web.Request):
@@ -361,6 +392,8 @@ def make_app() -> web.Application:
     app.router.add_post("/api/receipt", api_receipt)
     app.router.add_post("/api/receipt/qr", api_receipt_qr)
     app.router.add_post("/api/export", api_export)
+    app.router.add_get("/api/admin/overview", api_admin_overview)
+    app.router.add_put(r"/api/admin/users/{id:\d+}", api_admin_block)
     app.router.add_static("/static", STATIC_DIR, show_index=False)
     return app
 

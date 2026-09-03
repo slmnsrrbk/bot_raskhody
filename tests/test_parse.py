@@ -259,6 +259,36 @@ class NoteMigrationTests(unittest.TestCase):
             crypto.reset_cache()
 
 
+class AdminStorageTests(StorageTests):
+    def test_activity_days_and_blocking(self):
+        today = datetime.date(2030, 6, 15)          # далеко от реальной даты: setUp уже отметил users 1 и 2 сегодня
+        storage.upsert_user(1, "A", "", day=today)
+        storage.upsert_user(1, "A", "", day=today)                    # повтор в тот же день не дублируется
+        for i in range(7):
+            storage.upsert_user(2, "B", "", day=today - datetime.timedelta(days=i))
+        storage.upsert_user(3, "C", "", day=today - datetime.timedelta(days=20))
+        ov = storage.admin_overview(today)
+        self.assertEqual((ov["stats"]["total"], ov["stats"]["active_today"], ov["stats"]["active_7"], ov["stats"]["active_30"]), (3, 2, 2, 3))
+        self.assertEqual(ov["stats"]["daily_users"], 1)
+        self.assertEqual(sum(x["n"] for x in ov["series"]), 8)
+        self.assertTrue(storage.set_blocked(3, True))
+        self.assertTrue(storage.is_blocked(3))
+        self.assertFalse(storage.is_blocked(1))
+        self.assertFalse(storage.set_blocked(999, True))
+
+    def test_blocked_user_rejected_by_bot(self):
+        class U:
+            id, first_name, username = 55, "X", ""
+
+        class Upd:
+            effective_user = U()
+
+        storage.upsert_user(55, "X", "")
+        storage.set_blocked(55, True)
+        with self.assertRaises(PermissionError):
+            main.register(Upd())
+
+
 class CustomCategoryTests(StorageTests):
     def test_user_categories(self):
         self.assertEqual(storage.add_user_category(1, "  дети "), "Дети")

@@ -125,6 +125,23 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .fsum{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 4px 10px;font-size:13px;color:var(--label2)}
 .fsum .tag{background:var(--fill);border-radius:999px;padding:4px 10px;color:var(--label);font-weight:500}
 .fsum button{color:var(--blue);font-size:13px;font-weight:500}
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px}
+.stat{background:var(--field);border-radius:12px;padding:12px 14px}
+.stat b{display:block;font-size:24px;font-weight:700;letter-spacing:-.02em}
+.stat span{font-size:12px;color:var(--label2)}
+.bars{display:flex;align-items:flex-end;gap:6px;height:56px;padding:0 4px 6px}
+.bars div{flex:1;background:var(--blue);border-radius:4px 4px 2px 2px;min-height:3px;opacity:.85;position:relative}
+.bars div i{position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:10px;font-style:normal;color:var(--label2)}
+.bars-l{display:flex;gap:6px;padding:0 4px 14px}.bars-l span{flex:1;text-align:center;font-size:10px;color:var(--label3)}
+.urow{display:flex;align-items:center;gap:12px;padding:10px 14px;position:relative}
+.urow + .urow::before{content:"";position:absolute;left:62px;right:0;top:0;height:.5px;background:var(--sep)}
+.urow .av{width:36px;height:36px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;flex:none}
+.urow.off .av{background:var(--gray)}
+.urow .main{flex:1;min-width:0}
+.urow .name{font-size:15px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.urow .sub{font-size:12px;color:var(--label2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.urow .tg{font-size:13px;font-weight:600;color:var(--red);flex:none;padding:6px 10px;border-radius:8px;background:var(--fill)}
+.urow.off .tg{color:var(--green)}
 .frange{display:flex;gap:10px}.frange .fields{flex:1;min-width:0}.frange .field label{width:auto}
 .card{background:var(--card);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
 .hero{padding:18px 18px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}
@@ -241,6 +258,9 @@ button{background:none;border:0;padding:0;cursor:pointer}
     <div class="subtitle" id="subtitle">&nbsp;</div>
   </div>
   <div class="hbtns">
+    <button class="addbtn scan" id="adminTop" aria-label="Админка" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6z"/><path d="M9.5 12l2 2 3.5-4"/></svg>
+    </button>
     <button class="addbtn scan" id="limitTop" aria-label="Лимиты">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5A8.5 8.5 0 1 1 19.5 16.5"/><path d="M12 13l3.5-4"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/></svg>
     </button>
@@ -568,6 +588,7 @@ document.getElementById("app").addEventListener("click", e => {
 });
 document.getElementById("addTop").addEventListener("click", () => { haptic("medium"); openAdd(); });
 document.getElementById("limitTop").addEventListener("click", () => { haptic("light"); openLimits(); });
+document.getElementById("adminTop").addEventListener("click", () => { haptic("light"); openAdmin(); });
 document.getElementById("mainbtn").addEventListener("click", () => openAdd());
 
 /* ---------- Свайп по строке ---------- */
@@ -863,6 +884,61 @@ function showReceipt(rc){
   render();
 }
 
+/* ---------- Админка владельца ---------- */
+function ago(iso){
+  if (!iso) return "—";
+  const ms = Date.now() - new Date(iso).getTime(), m = Math.round(ms / 60000);
+  if (m < 2) return "только что"; if (m < 60) return `${m} мин назад`;
+  const h = Math.round(m / 60); if (h < 24) return `${h} ч назад`;
+  const d = Math.round(h / 24); if (d < 30) return `${d} ${plural(d,"день","дня","дней")} назад`;
+  return new Date(iso).toLocaleDateString("ru-RU");
+}
+async function openAdmin(){
+  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>Админка</h2><span></span></div><div class="empty"><div class="spin"></div></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
+  let data;
+  try { data = await api("/api/admin/overview"); } catch(e){ closeSheet(); toast(e.message); return; }
+  let q = "";
+  const render = () => {
+    const S = data.stats, max = Math.max(1, ...data.series.map(x => x.n));
+    const users = data.users.filter(u => !q || (u.first_name + " " + u.username + " " + u.id).toLowerCase().includes(q));
+    const row = u => { const me = u.id === data.owner_id; const sub = [`id ${u.id}`, `был(а) ${ago(u.last_seen)}`, `${u.expenses} ${plural(u.expenses,"трата","траты","трат")}`, `${u.days_30} ${plural(u.days_30,"день","дня","дней")} из 30`].join(" · ");
+      return `<div class="urow ${u.blocked?"off":""}" data-id="${u.id}"><div class="av">${esc((u.first_name || u.username || "?").slice(0,1).toUpperCase())}</div>
+        <div class="main"><div class="name">${esc(u.first_name || "Без имени")}${u.username ? ` <span style="color:var(--label2);font-weight:400">@${esc(u.username)}</span>` : ""}${me ? " · вы" : ""}${u.blocked ? ' <span style="color:var(--red)">· доступ закрыт</span>' : ""}</div><div class="sub">${sub}</div></div>
+        ${me ? "" : `<button type="button" class="tg" data-toggle="${u.id}">${u.blocked ? "Открыть" : "Закрыть"}</button>`}</div>`; };
+    sheet.innerHTML = `<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>Админка</h2><span></span></div>
+      <div class="stats">
+        <div class="stat"><b class="num">${S.total}</b><span>пользователей${S.blocked ? ` · ${S.blocked} без доступа` : ""}</span></div>
+        <div class="stat"><b class="num">${S.active_today}</b><span>активны сегодня</span></div>
+        <div class="stat"><b class="num">${S.active_7}</b><span>активны за 7 дней</span></div>
+        <div class="stat"><b class="num">${S.daily_users}</b><span>пользуются ежедневно</span></div>
+        <div class="stat"><b class="num">${S.avg_daily_7}</b><span>в среднем в день</span></div>
+        <div class="stat"><b class="num">${S.expenses_7}</b><span>трат за 7 дней · всего ${S.expenses_total}</span></div>
+      </div>
+      <div class="hint">Активные пользователи по дням</div>
+      <div class="card" style="padding:20px 10px 8px"><div class="bars">${data.series.map(x => `<div style="height:${Math.max(4, x.n / max * 100)}%"><i>${x.n || ""}</i></div>`).join("")}</div>
+        <div class="bars-l">${data.series.map(x => `<span>${dateLabel(x.day, data.today).replace("Сегодня","Сег.").replace("Вчера","Вч.").replace(/ [а-я]+$/, m => " " + m.trim().slice(0,3))}</span>`).join("")}</div></div>
+      <div class="hint" style="padding-top:16px">Пользователи · ${data.users.length}</div>
+      <div class="fields"><div class="field"><label>Поиск</label><input id="uq" placeholder="имя, @username или id" value="${esc(q)}" autocomplete="off"></div></div>
+      <div class="card" id="ulist">${users.map(row).join("") || `<div class="empty">Никого не найдено</div>`}</div>
+      <div class="hint" style="padding-top:10px">Содержимое трат зашифровано и здесь не показывается. «Закрыть» отключает бота и приложение для пользователя, «Открыть» возвращает доступ.</div>`;
+    document.getElementById("cancel").onclick = closeSheet;
+    const inp = document.getElementById("uq");
+    inp.addEventListener("input", () => { q = inp.value.trim().toLowerCase(); const pos = inp.selectionStart; render(); const i2 = document.getElementById("uq"); i2.focus(); i2.setSelectionRange(pos, pos); });
+    document.getElementById("ulist").addEventListener("click", async e => {
+      const b = e.target.closest("[data-toggle]"); if (!b) return;
+      const u = data.users.find(x => x.id === Number(b.dataset.toggle)); if (!u) return;
+      const go = async () => {
+        try { b.disabled = true; const r = await api("/api/admin/users/" + u.id, {method:"PUT", body: JSON.stringify({blocked: !u.blocked})}); u.blocked = r.blocked; data.stats.blocked += r.blocked ? 1 : -1; haptic("ok"); render(); }
+        catch(err){ haptic("err"); toast(err.message); b.disabled = false; }
+      };
+      if (u.blocked) return go();
+      const msg = `Закрыть доступ для «${u.first_name || u.username || u.id}»? Бот и приложение перестанут отвечать этому пользователю.`;
+      if (tg && tg.showConfirm) tg.showConfirm(msg, ok => ok && go()); else if (confirm(msg)) go();
+    });
+  };
+  render();
+}
+
 /* ---------- Фильтр операций: категории и сумма от/до ---------- */
 function filterActive(){ const f = state.filter; return !!(f && ((f.cats && f.cats.length) || f.min != null || f.max != null)); }
 function applyFilter(list){
@@ -1050,7 +1126,7 @@ let toastT; function toast(m){ const t = document.getElementById("toast"); t.cla
 
 /* ---------- Load ---------- */
 async function load(first=true){
-  try { state.data = await api("/api/state"); render(); if (first) showMain(); }
+  try { state.data = await api("/api/state"); render(); document.getElementById("adminTop").hidden = !(state.data.user && state.data.user.is_admin); if (first) showMain(); }
   catch(e){
     document.getElementById("app").innerHTML = `<section class="section"><div class="card"><div class="empty"><div class="big">🔒</div>${esc(e.message)}</div></div></section>`;
   }

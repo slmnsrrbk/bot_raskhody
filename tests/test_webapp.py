@@ -165,3 +165,38 @@ class InitDataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdminApiTests(WebAppApiTests):
+    async def test_overview_and_block(self):
+        # DEV-режим: пользователь 0 — владелец (OWNER_ID не задан)
+        webapp.storage.upsert_user(42, "Карим", "karim")
+        webapp.storage.add_expense(42, "кофе", 200, "Еда", "2026-09-01")
+        r = await self.client.get("/api/admin/overview")
+        self.assertEqual(r.status, 200)
+        data = await r.json()
+        self.assertGreaterEqual(data["stats"]["total"], 2)
+        u = next(x for x in data["users"] if x["id"] == 42)
+        self.assertEqual((u["first_name"], u["expenses"], u["blocked"]), ("Карим", 1, False))
+        self.assertNotIn("name", u)                      # содержимое трат не отдаётся
+        self.assertEqual(len(data["series"]), 7)
+
+        r = await self.client.put("/api/admin/users/42", json={"blocked": True})
+        self.assertEqual(r.status, 200)
+        self.assertTrue(webapp.storage.is_blocked(42))
+        r = await self.client.put("/api/admin/users/0", json={"blocked": True})
+        self.assertEqual(r.status, 400)                  # себя закрыть нельзя
+        r = await self.client.put("/api/admin/users/999", json={"blocked": True})
+        self.assertEqual(r.status, 404)
+
+    async def test_blocked_user_gets_403_and_non_owner_no_admin(self):
+        from unittest import mock
+        webapp.storage.upsert_user(7, "Гость", "")
+        webapp.storage.set_blocked(7, True)
+        with mock.patch.object(webapp, "OWNER_ID", 1):     # владелец — не dev-пользователь 0
+            r = await self.client.get("/api/admin/overview")
+            self.assertEqual(r.status, 403)
+            state = await (await self.client.get("/api/state")).json()
+            self.assertFalse(state["user"]["is_admin"])
+        state = await (await self.client.get("/api/state")).json()
+        self.assertTrue(state["user"]["is_admin"])
