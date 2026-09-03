@@ -2,6 +2,8 @@
 
 Polza AI: https://polza.ai/docs — base URL https://api.polza.ai/api/v1, Bearer-ключ, /chat/completions.
 """
+import base64
+import json
 import logging
 import os
 import re
@@ -16,6 +18,8 @@ POLZA_API_KEY = os.getenv("POLZA_API_KEY", "")
 POLZA_BASE_URL = os.getenv("POLZA_BASE_URL", "https://api.polza.ai/api/v1")
 POLZA_MODEL = os.getenv("POLZA_MODEL", "google/gemini-2.5-flash-lite")
 POLZA_FALLBACK_MODEL = os.getenv("POLZA_FALLBACK_MODEL", "openai/gpt-4.1-nano")
+POLZA_VISION_MODEL = os.getenv("POLZA_VISION_MODEL", "google/gemini-2.5-flash-lite")
+POLZA_VISION_FALLBACK_MODEL = os.getenv("POLZA_VISION_FALLBACK_MODEL", "openai/gpt-4.1-mini")
 CHAD_API_KEY = os.getenv("CHAD_API_KEY", "")
 CHAD_API_URL = "https://ask.chadgpt.ru/api/public/gpt-4o-mini"
 TIMEOUT = 20
@@ -56,12 +60,12 @@ def by_keywords(name: str):
     return None
 
 
-def _polza_chat(messages, model, max_tokens=8, temperature=0):
+def _polza_chat(messages, model, max_tokens=8, temperature=0, timeout=TIMEOUT, **extra):
     r = _session.post(
         f"{POLZA_BASE_URL}/chat/completions",
         headers={"Authorization": f"Bearer {POLZA_API_KEY}", "Content-Type": "application/json"},
-        json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
-        timeout=TIMEOUT,
+        json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature, **extra},
+        timeout=timeout,
     )
     r.raise_for_status()
     return (r.json()["choices"][0]["message"]["content"] or "").strip()
@@ -132,3 +136,83 @@ def generate_advice(report: str) -> str:
     if answer is None:
         answer = _chad(prompt)
     return answer or ""
+
+
+# ---------------------------------------------------------------------------
+# Чек по фотографии
+# ---------------------------------------------------------------------------
+RECEIPT_PROMPT = (
+    "На фото кассовый чек. Извлеки покупки и верни ТОЛЬКО JSON без пояснений вида:\n"
+    '{"store": "название магазина или null", "date": "ГГГГ-ММ-ДД или null", "total": число или null, '
+    '"items": [{"name": "короткое понятное название товара по-русски", "amount": сумма за позицию в рублях с учётом количества, '
+    '"category": одна из: ' + ", ".join(CATEGORIES) + "}]}\n"
+    "Названия сокращай до понятных (например «Молоко 2,5% 1л», а не код товара). Скидки учитывай в сумме позиции. "
+    "Если это не чек — верни {\"items\": []}."
+)
+
+
+def _extract_json(text: str):
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-z]*\s*|\s*```$", "", text, flags=re.S)
+    try:
+        return json.loads(text)
+    except ValueError:
+        m = re.search(r"\{.*\}", text, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except ValueError:
+                pass
+    return None
+
+
+def parse_receipt(image_bytes: bytes, mime: str = "image/jpeg"):
+    """-> {"store", "date", "total", "items": [{"name", "amount", "category"}]} или None, если не распознано."""
+    if not POLZA_API_KEY:
+        return None
+    data_url = f"data:{mime};base64," + base64.b64encode(image_bytes).decode()
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": RECEIPT_PROMPT},
+        {"type": "image_url", "image_url": {"url": data_url}},
+    ]}]
+    for model in (POLZA_VISION_MODEL, POLZA_VISION_FALLBACK_MODEL):
+        try:
+            answer = _polza_chat(messages, model, max_tokens=1500, temperature=0, timeout=60)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Polza vision (%s): %s", model, e)
+            continue
+        parsed = _extract_json(answer or "")
+        if isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
+            return _clean_receipt(parsed)
+        logger.warning("Polza vision (%s): не удалось разобрать ответ: %.200s", model, answer)
+    return None
+
+
+def _clean_receipt(parsed: dict) -> dict:
+    items = []
+    for it in parsed.get("items", [])[:60]:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or "").strip()
+        try:
+            amount = int(round(float(str(it.get("amount", "")).replace(",", ".").replace(" ", ""))))
+        except ValueError:
+            continue
+        if not name or amount <= 0:
+            continue
+        cat = str(it.get("category") or "").strip().capitalize()
+        if cat not in CATEGORIES:
+            cat = by_keywords(name) or DEFAULT
+        items.append({"name": name[:100], "amount": amount, "category": cat})
+    date = parsed.get("date")
+    try:
+        date = storage.to_iso(date) if date else None
+    except ValueError:
+        date = None
+    try:
+        total = int(round(float(parsed.get("total")))) if parsed.get("total") is not None else None
+    except (TypeError, ValueError):
+        total = None
+    store = str(parsed.get("store") or "").strip()[:60] or None
+    return {"store": store, "date": date, "total": total, "items": items}

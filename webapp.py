@@ -16,7 +16,10 @@ from urllib.parse import parse_qsl
 import pytz
 from aiohttp import web
 
+import aiohttp
+
 import ai
+import export
 import storage
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -38,6 +41,7 @@ TZ = pytz.timezone(os.getenv("TIMEZONE", "Asia/Krasnoyarsk"))
 STATIC_DIR = BASE_DIR / "webapp"
 CATEGORIES = storage.CATEGORIES
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "120"))   # запросов в минуту на пользователя
+MAX_IMAGE = 8 * 1024 * 1024
 
 
 detect_category = ai.detect_category
@@ -214,6 +218,74 @@ async def api_limits(request: web.Request):
     return web.json_response(storage.set_limits(uid, **values))
 
 
+async def api_bulk(request: web.Request):
+    uid = request["user_id"]
+    body = await request.json()
+    items = body.get("items")
+    if not isinstance(items, list) or not items or len(items) > 60:
+        raise _error(web.HTTPBadRequest, "Нет позиций для добавления")
+    clean = []
+    for it in items:
+        name = str(it.get("name", "")).strip()
+        if not name:
+            continue
+        cat = it.get("category") if it.get("category") in CATEGORIES else (ai.by_keywords(name) or "Другое")
+        clean.append({"name": name, "amount": parse_amount(it.get("amount")), "category": cat, "date": parse_date(it.get("date"))})
+    if not clean:
+        raise _error(web.HTTPBadRequest, "Нет позиций для добавления")
+    added = storage.add_expenses_bulk(uid, clean)
+    return web.json_response({"added": added, "total": sum(a["amount"] for a in added)}, status=201)
+
+
+async def api_receipt(request: web.Request):
+    """Фото чека (multipart, поле image) -> распознанные позиции без сохранения."""
+    if not ai.POLZA_API_KEY:
+        raise _error(web.HTTPServiceUnavailable, "Распознавание чеков не настроено")
+    reader = await request.multipart()
+    data, mime = b"", "image/jpeg"
+    async for part in reader:
+        if part.name == "image":
+            mime = part.headers.get("Content-Type", mime) or mime
+            while True:
+                chunk = await part.read_chunk(256 * 1024)
+                if not chunk:
+                    break
+                data += chunk
+                if len(data) > MAX_IMAGE:
+                    raise _error(web.HTTPRequestEntityTooLarge, "Фото больше 8 МБ")
+    if not data:
+        raise _error(web.HTTPBadRequest, "Нет фото")
+    parsed = await request.loop.run_in_executor(None, ai.parse_receipt, data, mime if mime.startswith("image/") else "image/jpeg")
+    if not parsed or not parsed["items"]:
+        raise _error(web.HTTPUnprocessableEntity, "Не удалось разобрать чек. Сфотографируйте ровнее при хорошем свете")
+    parsed["date"] = parsed["date"] or today().isoformat()
+    return web.json_response(parsed)
+
+
+async def api_export(request: web.Request):
+    """Excel за период: в Telegram отправляем файл в чат с ботом, в dev-режиме отдаём файл напрямую."""
+    uid = request["user_id"]
+    body = await request.json()
+    key = str(body.get("period", "30"))
+    label, days = export.PERIODS.get(key, export.PERIODS["30"])
+    items = storage.list_expenses(uid, days, today())
+    data = await request.loop.run_in_executor(None, export.build_xlsx, items, label, today())
+    name = export.filename(key, today())
+    if DEV_MODE or body.get("download"):
+        return web.Response(body=data, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(uid))
+    form.add_field("caption", f"📥 Расходы: {label.lower()} · {len(items)} зап. · {sum(i['amount'] for i in items):,} ₽".replace(",", " "))
+    form.add_field("document", data, filename=name, content_type="application/octet-stream")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument", data=form, timeout=aiohttp.ClientTimeout(total=60)) as r:
+            if r.status != 200:
+                logger.warning("sendDocument: %s %s", r.status, await r.text())
+                raise _error(web.HTTPBadGateway, "Не удалось отправить файл в Telegram")
+    return web.json_response({"ok": True, "count": len(items)})
+
+
 async def index(request: web.Request):
     return web.FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
@@ -223,7 +295,7 @@ async def health(request: web.Request):
 
 
 def make_app() -> web.Application:
-    app = web.Application(middlewares=[security_headers, auth_middleware])
+    app = web.Application(middlewares=[security_headers, auth_middleware], client_max_size=MAX_IMAGE + 1024 * 1024)
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/api/state", api_state)
@@ -231,6 +303,9 @@ def make_app() -> web.Application:
     app.router.add_put(r"/api/expenses/{id:\d+}", api_update)
     app.router.add_delete(r"/api/expenses/{id:\d+}", api_delete)
     app.router.add_put("/api/limits", api_limits)
+    app.router.add_post("/api/expenses/bulk", api_bulk)
+    app.router.add_post("/api/receipt", api_receipt)
+    app.router.add_post("/api/export", api_export)
     app.router.add_static("/static", STATIC_DIR, show_index=False)
     return app
 

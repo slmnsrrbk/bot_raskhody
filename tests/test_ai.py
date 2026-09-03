@@ -5,6 +5,7 @@ from unittest import mock
 
 os.environ.setdefault("TELEGRAM_TOKEN", "test")
 import ai  # noqa: E402
+import crypto  # noqa: E402
 import storage  # noqa: E402
 
 
@@ -12,6 +13,7 @@ class AiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         storage.DB_FILE = storage.Path(self.tmp.name) / "t.db"
+        crypto.KEY_FILE = storage.Path(self.tmp.name) / ".k"; crypto.reset_cache()
         storage.init_db()
 
     def tearDown(self):

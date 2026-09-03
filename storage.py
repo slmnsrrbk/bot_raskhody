@@ -1,15 +1,20 @@
 """Общее хранилище бота и мини-приложения: SQLite, данные привязаны к Telegram-аккаунту.
 
 Оба процесса (main.py и webapp.py) работают с одним файлом data.db; режим WAL
-позволяет читать и писать параллельно.
+позволяет читать и писать параллельно. Название, сумма и категория каждой траты и лимиты
+хранятся зашифрованными ключом пользователя (см. crypto.py); в открытом виде — только
+id пользователя и дата (нужна для выборок по периоду).
 """
 import datetime
+import hashlib
 import json
 import os
 import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+
+import crypto
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = Path(os.getenv("DB_FILE", str(BASE_DIR / "data.db")))
@@ -33,7 +38,7 @@ CREATE TABLE IF NOT EXISTS expenses (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
     name        TEXT NOT NULL,
-    amount      INTEGER NOT NULL,
+    amount      TEXT NOT NULL,
     category    TEXT NOT NULL,
     date        TEXT NOT NULL,
     created_at  TEXT NOT NULL
@@ -41,9 +46,9 @@ CREATE TABLE IF NOT EXISTS expenses (
 CREATE INDEX IF NOT EXISTS ix_expenses_user_date ON expenses(user_id, date);
 CREATE TABLE IF NOT EXISTS limits (
     user_id     INTEGER PRIMARY KEY,
-    daily       INTEGER,
-    weekly      INTEGER,
-    monthly     INTEGER
+    daily       TEXT,
+    weekly      TEXT,
+    monthly     TEXT
 );
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -77,6 +82,23 @@ def connect():
 def init_db():
     with connect() as con:
         con.executescript(SCHEMA)
+    crypto.master_key()  # создаёт .data_key при первом запуске
+    _encrypt_legacy_rows()
+
+
+def _encrypt_legacy_rows():
+    """Записи, сохранённые до включения шифрования, шифруем на месте."""
+    with connect() as con:
+        rows = con.execute("SELECT id, user_id, name, amount, category FROM expenses").fetchall()
+        for r in rows:
+            if not crypto.is_encrypted(r["name"]):
+                con.execute("UPDATE expenses SET name=?, amount=?, category=? WHERE id=?",
+                            (crypto.encrypt(r["user_id"], r["name"]), crypto.encrypt(r["user_id"], r["amount"]),
+                             crypto.encrypt(r["user_id"], r["category"]), r["id"]))
+        for r in con.execute("SELECT user_id, daily, weekly, monthly FROM limits").fetchall():
+            if any(v is not None and not crypto.is_encrypted(v) for v in (r["daily"], r["weekly"], r["monthly"])):
+                con.execute("UPDATE limits SET daily=?, weekly=?, monthly=? WHERE user_id=?",
+                            (*[None if v is None else crypto.encrypt(r["user_id"], v) for v in (r["daily"], r["weekly"], r["monthly"])], r["user_id"]))
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +143,13 @@ def all_user_ids():
 # Траты
 # ---------------------------------------------------------------------------
 def _row(r) -> dict:
-    return {"id": r["id"], "name": r["name"], "amount": r["amount"], "category": r["category"],
-            "iso": r["date"], "date": to_display(r["date"])}
+    uid = r["user_id"]
+    return {"id": r["id"], "name": crypto.decrypt(uid, r["name"]), "amount": int(crypto.decrypt(uid, r["amount"])),
+            "category": crypto.decrypt(uid, r["category"]), "iso": r["date"], "date": to_display(r["date"])}
+
+
+def _enc(user_id: int, value):
+    return None if value is None else crypto.encrypt(user_id, value)
 
 
 def add_expense(user_id: int, name: str, amount: int, category: str, date) -> dict:
@@ -134,7 +161,7 @@ def add_expense(user_id: int, name: str, amount: int, category: str, date) -> di
     with connect() as con:
         cur = con.execute(
             "INSERT INTO expenses(user_id, name, amount, category, date, created_at) VALUES(?,?,?,?,?,?)",
-            (user_id, name[:100], int(amount), category, iso, _now()),
+            (user_id, _enc(user_id, name[:100]), _enc(user_id, int(amount)), _enc(user_id, category), iso, _now()),
         )
         return _row(con.execute("SELECT * FROM expenses WHERE id=?", (cur.lastrowid,)).fetchone())
 
@@ -157,9 +184,10 @@ def update_expense(user_id: int, expense_id: int, **fields):
         allowed["date"] = to_iso(fields["date"])
     if not allowed:
         return get_expense(user_id, expense_id)
+    values = [v if k == "date" else _enc(user_id, v) for k, v in allowed.items()]
     sets = ", ".join(f"{k}=?" for k in allowed)
     with connect() as con:
-        con.execute(f"UPDATE expenses SET {sets} WHERE id=? AND user_id=?", (*allowed.values(), expense_id, user_id))
+        con.execute(f"UPDATE expenses SET {sets} WHERE id=? AND user_id=?", (*values, expense_id, user_id))
     return get_expense(user_id, expense_id)
 
 
@@ -219,8 +247,10 @@ def users_with_expenses(days: int, today: datetime.date = None):
 def get_limits(user_id: int) -> dict:
     with connect() as con:
         r = con.execute("SELECT daily, weekly, monthly FROM limits WHERE user_id=?", (user_id,)).fetchone()
-    return {"daily": r["daily"], "weekly": r["weekly"], "monthly": r["monthly"]} if r else \
-        {"daily": None, "weekly": None, "monthly": None}
+    if not r:
+        return {"daily": None, "weekly": None, "monthly": None}
+    dec = lambda v: None if v is None else int(crypto.decrypt(user_id, v))  # noqa: E731
+    return {"daily": dec(r["daily"]), "weekly": dec(r["weekly"]), "monthly": dec(r["monthly"])}
 
 
 def set_limits(user_id: int, **values) -> dict:
@@ -233,7 +263,7 @@ def set_limits(user_id: int, **values) -> dict:
         con.execute(
             """INSERT INTO limits(user_id, daily, weekly, monthly) VALUES(?,?,?,?)
                ON CONFLICT(user_id) DO UPDATE SET daily=excluded.daily, weekly=excluded.weekly, monthly=excluded.monthly""",
-            (user_id, cur["daily"], cur["weekly"], cur["monthly"]),
+            (user_id, _enc(user_id, cur["daily"]), _enc(user_id, cur["weekly"]), _enc(user_id, cur["monthly"])),
         )
     return cur
 
@@ -241,15 +271,39 @@ def set_limits(user_id: int, **values) -> dict:
 # ---------------------------------------------------------------------------
 # Кэш «название → категория» (общий для всех пользователей, без личных данных)
 # ---------------------------------------------------------------------------
+def _cache_key(name: str) -> str:
+    return hashlib.sha256(name.strip().lower().encode("utf-8")).hexdigest()
+
+
 def cache_get(name: str):
     with connect() as con:
-        r = con.execute("SELECT category FROM category_cache WHERE name=?", (name,)).fetchone()
+        r = con.execute("SELECT category FROM category_cache WHERE name=?", (_cache_key(name),)).fetchone()
         return r["category"] if r else None
 
 
 def cache_set(name: str, category: str):
     with connect() as con:
-        con.execute("INSERT OR REPLACE INTO category_cache(name, category) VALUES(?,?)", (name[:100], category))
+        con.execute("INSERT OR REPLACE INTO category_cache(name, category) VALUES(?,?)", (_cache_key(name), category))
+
+
+def add_expenses_bulk(user_id: int, items):
+    """Добавляет несколько трат за раз; возвращает список записей."""
+    return [add_expense(user_id, it["name"], it["amount"], it.get("category", "Другое"), it.get("date") or datetime.date.today())
+            for it in items]
+
+
+def delete_many(user_id: int, ids):
+    n = 0
+    with connect() as con:
+        for i in ids:
+            n += con.execute("DELETE FROM expenses WHERE id=? AND user_id=?", (int(i), user_id)).rowcount
+    return n
+
+
+def wipe_all():
+    """Удаляет все траты, лимиты и кэш (используется для очистки тестовых данных)."""
+    with connect() as con:
+        con.executescript("DELETE FROM expenses; DELETE FROM limits; DELETE FROM category_cache; DELETE FROM users;")
 
 
 # ---------------------------------------------------------------------------

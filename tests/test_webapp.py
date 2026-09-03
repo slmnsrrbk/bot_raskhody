@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 from aiohttp.test_utils import AioHTTPTestCase
 
+import crypto
 import webapp
 
 
@@ -25,6 +26,7 @@ class WebAppApiTests(AioHTTPTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
         webapp.storage.DB_FILE = base / "t.db"
+        crypto.KEY_FILE = base / ".k"; crypto.reset_cache()
         webapp.storage.init_db()
         webapp.DEV_MODE = True
         webapp._buckets.clear()
@@ -84,6 +86,25 @@ class WebAppApiTests(AioHTTPTestCase):
     async def test_limits(self):
         r = await self.client.put("/api/limits", json={"daily": "2 500", "weekly": "", "monthly": 80000})
         self.assertEqual(await r.json(), {"daily": 2500, "weekly": None, "monthly": 80000})
+
+    async def test_bulk_and_export(self):
+        r = await self.client.post("/api/expenses/bulk", json={"items": [
+            {"name": "Молоко", "amount": 80, "category": "Еда", "date": "2026-09-03"},
+            {"name": "Пакет", "amount": 7, "date": "2026-09-03"}]})
+        self.assertEqual(r.status, 201)
+        d = await r.json()
+        self.assertEqual((len(d["added"]), d["total"]), (2, 87))
+        r = await self.client.post("/api/export", json={"period": "all"})
+        self.assertEqual(r.status, 200)
+        self.assertIn("spreadsheetml", r.headers["Content-Type"])
+        self.assertGreater(len(await r.read()), 2000)
+        r = await self.client.post("/api/expenses/bulk", json={"items": []})
+        self.assertEqual(r.status, 400)
+
+    async def test_receipt_requires_key(self):
+        webapp.ai.POLZA_API_KEY = ""
+        r = await self.client.post("/api/receipt", data={"image": b"x"})
+        self.assertEqual(r.status, 503)
 
     async def test_index_served(self):
         r = await self.client.get("/")

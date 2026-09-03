@@ -1,6 +1,8 @@
 import asyncio
 import datetime
+import io
 import logging
+import secrets
 import os
 import re
 import sys
@@ -28,6 +30,7 @@ from telegram.ext import (
 )
 
 import ai
+import export
 import storage
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -48,6 +51,7 @@ TZ = pytz.timezone(TIMEZONE)
 CATEGORIES = storage.CATEGORIES
 BTN_TODAY, BTN_WEEK, BTN_MONTH = "Расходы за сегодня", "За 7 дней", "За 30 дней"
 BTN_LIMIT, BTN_DELETE, BTN_APP = "Установить лимит", "🗑 Удалить трату", "📱 Открыть приложение"
+BTN_EXPORT = "📥 Выгрузка"
 
 scheduler = AsyncIOScheduler(timezone=TZ)
 
@@ -139,9 +143,9 @@ def limit_status(user_id: int) -> str:
 
 
 def main_keyboard():
-    rows = [[BTN_TODAY, BTN_WEEK], [BTN_MONTH, BTN_LIMIT], [BTN_DELETE]]
+    rows = [[BTN_TODAY, BTN_WEEK], [BTN_MONTH, BTN_LIMIT], [BTN_DELETE, BTN_EXPORT]]
     if WEBAPP_URL:
-        rows[2].append(KeyboardButton(BTN_APP, web_app=WebAppInfo(url=WEBAPP_URL)))
+        rows.append([KeyboardButton(BTN_APP, web_app=WebAppInfo(url=WEBAPP_URL))])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -181,7 +185,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int
     context.user_data.pop("limit_type", None)
     await update.message.reply_text(
         f"👋 Привет, {update.effective_user.first_name}! Я помогу вести учёт расходов.\n\n"
-        "Просто напишите, например: `вчера хлеб 200` или `такси 350`\n\n"
+        "Просто напишите, например: `вчера хлеб 200` или `такси 350`.\n"
+        "📷 Пришлите фото чека — я распознаю покупки и добавлю их сами.\n\n"
         f"{limit_text(user_id)}",
         reply_markup=main_keyboard(),
         parse_mode="Markdown",
@@ -300,6 +305,83 @@ async def _do_delete(send, context, user_id: int, expense_id: int):
     await send(f"🗑 Удалено: {_item_label(item)}", reply_markup=kb)
 
 
+# --- чек по фото ---
+@guarded
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    if not ai.POLZA_API_KEY:
+        await update.message.reply_text("Распознавание чеков не настроено (нет ключа Polza AI).")
+        return
+    wait = await update.message.reply_text("🔎 Читаю чек…")
+    photo = update.message.photo[-1] if update.message.photo else None
+    doc = update.message.document
+    try:
+        if photo:
+            f = await photo.get_file()
+            mime = "image/jpeg"
+        elif doc and (doc.mime_type or "").startswith("image/"):
+            f = await doc.get_file()
+            mime = doc.mime_type
+        else:
+            await wait.edit_text("Пришлите чек как фото.")
+            return
+        data = bytes(await f.download_as_bytearray())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Не удалось скачать фото: %s", e)
+        await wait.edit_text("Не удалось получить фото, попробуйте ещё раз.")
+        return
+    parsed = await in_thread(ai.parse_receipt, data, mime)
+    if not parsed or not parsed["items"]:
+        await wait.edit_text("🤷 Не смог разобрать чек. Попробуйте сфотографировать ровнее и при хорошем свете.")
+        return
+    date = parsed["date"] or today().isoformat()
+    for it in parsed["items"]:
+        it["date"] = date
+    added = storage.add_expenses_bulk(user_id, parsed["items"])
+    token = secrets.token_hex(4)
+    context.user_data.setdefault("receipts", {})[token] = [a["id"] for a in added]
+    total = sum(a["amount"] for a in added)
+    head = f"🧾 {parsed['store'] or 'Чек'} · {storage.to_display(date)}"
+    lines = [f"• {a['name']} — {fmt(a['amount'])} ({a['category']})" for a in added[:20]]
+    if len(added) > 20:
+        lines.append(f"… и ещё {len(added) - 20}")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Отменить весь чек", callback_data=f"rc:{token}")]])
+    await wait.edit_text(f"{head}\nДобавлено {len(added)} {plural(len(added), 'позиция', 'позиции', 'позиций')} на {fmt(total)}:\n\n" + "\n".join(lines), reply_markup=kb)
+    status = limit_status(user_id)
+    if status:
+        await update.message.reply_text("📊 " + status)
+
+
+def plural(n, one, few, many):
+    n = abs(n) % 100
+    if 11 <= n <= 19:
+        return many
+    n %= 10
+    return one if n == 1 else few if 2 <= n <= 4 else many
+
+
+# --- выгрузка в Excel ---
+def export_keyboard():
+    rows = [[InlineKeyboardButton(label, callback_data=f"xls:{key}")] for key, (label, _) in export.PERIODS.items()]
+    return InlineKeyboardMarkup(rows)
+
+
+@guarded
+async def ask_export(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    await update.message.reply_text("За какой период выгрузить таблицу?", reply_markup=export_keyboard())
+
+
+async def send_export(bot, user_id: int, period_key: str):
+    label, days = export.PERIODS.get(period_key, ("Всё время", None))
+    items = storage.list_expenses(user_id, days, today())
+    data = await in_thread(export.build_xlsx, items, label, today())
+    await bot.send_document(
+        chat_id=user_id,
+        document=io.BytesIO(data),
+        filename=export.filename(period_key, today()),
+        caption=f"📥 Расходы: {label.lower()} · {len(items)} {plural(len(items), 'запись', 'записи', 'записей')} · {fmt(sum(i['amount'] for i in items))}",
+    )
+
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     try:
@@ -330,6 +412,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("Возвращено")
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Отменить", callback_data=f"del:{new['id']}")]])
         await q.edit_message_text(f"✅ Возвращено: {_item_label(new)}", reply_markup=kb)
+    elif data.startswith("rc:"):
+        ids = context.user_data.get("receipts", {}).pop(data[3:], None)
+        if not ids:
+            await q.answer("Чек уже отменён", show_alert=True)
+            return
+        n = storage.delete_many(user_id, ids)
+        await q.answer("Чек отменён")
+        await q.edit_message_text(f"🗑 Чек отменён, удалено {n} {plural(n, 'позиция', 'позиции', 'позиций')}.")
+    elif data.startswith("xls:"):
+        await q.answer("Готовлю файл…")
+        await send_export(context.bot, user_id, data[4:])
+        try:
+            await q.edit_message_reply_markup(None)
+        except Exception:  # noqa: BLE001
+            pass
     else:
         await q.answer()
 
@@ -403,11 +500,14 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("delete", ask_delete))
     app.add_handler(CommandHandler("undo", delete_last))
+    app.add_handler(CommandHandler("export", ask_export))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_TODAY}$"), report_today))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_WEEK}$"), report_7))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_MONTH}$"), report_30))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_LIMIT}$"), ask_limit_type))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_DELETE}$"), ask_delete))
+    app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_EXPORT}$"), ask_export))
     app.add_handler(MessageHandler(T & filters.Regex(r"(?i)^удалить\s+последн"), delete_last))
     app.add_handler(MessageHandler(T & filters.Regex(r"(?i)лимит$"), ask_limit_value))
     app.add_handler(MessageHandler(T & filters.Regex(r"^\d+$"), set_limit_value))
