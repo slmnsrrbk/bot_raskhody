@@ -99,6 +99,7 @@ def init_db():
             logging.getLogger("storage").warning("Удалено %s записей другой схемы шифрования", n)
     crypto.master_key()  # создаёт .data_key при первом запуске
     _encrypt_legacy_rows()
+    _purge_undecodable_rows()
     with connect() as con:
         r = con.execute("SELECT value FROM meta WHERE key='categories_version'").fetchone()
         if not r or r["value"] != CATEGORIES_VERSION:
@@ -106,17 +107,43 @@ def init_db():
             con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('categories_version', ?)", (CATEGORIES_VERSION,))
 
 
+def _purge_undecodable_rows():
+    """Удаляет записи, которые невозможно расшифровать или разобрать (следы старых схем шифрования)."""
+    bad = []
+    with connect() as con:
+        for r in con.execute("SELECT * FROM expenses").fetchall():
+            try:
+                _row(r)
+            except Exception:  # noqa: BLE001
+                bad.append(r["id"])
+        for i in bad:
+            con.execute("DELETE FROM expenses WHERE id=?", (i,))
+        bad_limits = []
+        for r in con.execute("SELECT * FROM limits").fetchall():
+            try:
+                for v in (r["daily"], r["weekly"], r["monthly"]):
+                    if v is not None:
+                        int(crypto.decrypt(r["user_id"], v))
+            except Exception:  # noqa: BLE001
+                bad_limits.append(r["user_id"])
+        for uid in bad_limits:
+            con.execute("DELETE FROM limits WHERE user_id=?", (uid,))
+    if bad or bad_limits:
+        import logging
+        logging.getLogger("storage").warning("Удалено нечитаемых записей: %s трат, %s лимитов", len(bad), len(bad_limits))
+
+
 def _encrypt_legacy_rows():
-    """Записи, сохранённые до включения шифрования, шифруем на месте."""
+    """Записи, сохранённые до включения шифрования, шифруем на месте (только открытый текст, не чужие схемы)."""
     with connect() as con:
         rows = con.execute("SELECT id, user_id, name, amount, category FROM expenses").fetchall()
         for r in rows:
-            if not crypto.is_encrypted(r["name"]):
+            if not crypto.is_encrypted(r["name"]) and not str(r["name"]).startswith("enc"):
                 con.execute("UPDATE expenses SET name=?, amount=?, category=? WHERE id=?",
                             (crypto.encrypt(r["user_id"], r["name"]), crypto.encrypt(r["user_id"], r["amount"]),
                              crypto.encrypt(r["user_id"], r["category"]), r["id"]))
         for r in con.execute("SELECT user_id, daily, weekly, monthly FROM limits").fetchall():
-            if any(v is not None and not crypto.is_encrypted(v) for v in (r["daily"], r["weekly"], r["monthly"])):
+            if any(v is not None and not crypto.is_encrypted(v) and not str(v).startswith("enc") for v in (r["daily"], r["weekly"], r["monthly"])):
                 con.execute("UPDATE limits SET daily=?, weekly=?, monthly=? WHERE user_id=?",
                             (*[None if v is None else crypto.encrypt(r["user_id"], v) for v in (r["daily"], r["weekly"], r["monthly"])], r["user_id"]))
 

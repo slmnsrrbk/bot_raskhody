@@ -112,6 +112,16 @@ class BotBuildTests(StorageTests):
         storage.init_db()
         self.assertEqual(storage.cache_get("мясо в дом"), "Продукты")  # без смены версии кэш живёт
 
+    def test_double_wrapped_rows_removed(self):
+        # запись чужой схемы, случайно «обёрнутая» текущим ключом: сумма не разбирается -> удаляем при старте
+        wrapped = crypto.encrypt(1, "enc2:garbage")
+        with storage.connect() as con:
+            con.execute("INSERT INTO expenses(user_id,name,amount,category,date,created_at) VALUES(1,?,?,?,'2026-09-01','x')",
+                        (crypto.encrypt(1, "Кофе"), wrapped, crypto.encrypt(1, "Еда")))
+        storage.add_expense(1, "Норм", 10, "Еда", "2026-09-02")
+        storage.init_db()
+        self.assertEqual([i["name"] for i in storage.list_expenses(1)], ["Норм"])
+
     def test_foreign_scheme_rows_removed(self):
         import sqlite3
         raw = sqlite3.connect(storage.DB_FILE)
