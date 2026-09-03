@@ -17,7 +17,10 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Токены и ключи
-TELEGRAM_TOKEN = "8116816516:AAEmHIdS9tNQGhNVO83HF3fm_yVnY8RszZk"
+# Токен берётся из переменной окружения TELEGRAM_TOKEN (файл /root/bot/.env на сервере)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+if not TELEGRAM_TOKEN:
+    raise SystemExit("TELEGRAM_TOKEN не задан: добавьте строку TELEGRAM_TOKEN=... в файл .env рядом с main.py")
 CHAD_API_KEY = "chad-9814409421bc4afda8cb736d7d3403f4de4qu6jf"
 
 # Хранилище трат: локальный файл (Google Таблица отключена)

@@ -17,6 +17,8 @@ jobs:
       HOST: 201.24.120.213
       SSHPASS: ${{ secrets.VPS_PASSWORD }}
       ACTION: ${{ inputs.action }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      CHAD_API_KEY: ${{ secrets.CHAD_API_KEY }}
       SSH_OPTS: -o StrictHostKeyChecking=no -o ConnectTimeout=20
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +37,13 @@ jobs:
           sshpass -e ssh $SSH_OPTS "root@$HOST" \
             "APP_DIR=/root/bot BRANCH=${{ github.ref_name }} bash -s" < deploy/install.sh
 
+      - name: Write .env on server
+        if: env.ACTION == 'install' && env.TELEGRAM_TOKEN != ''
+        run: |
+          echo "::add-mask::$TELEGRAM_TOKEN"
+          { printf 'TELEGRAM_TOKEN=%s\n' "$TELEGRAM_TOKEN"; [ -n "$CHAD_API_KEY" ] && printf 'CHAD_API_KEY=%s\n' "$CHAD_API_KEY"; true; } \
+            | sshpass -e ssh $SSH_OPTS "root@$HOST" 'cat > /root/bot/.env && chmod 600 /root/bot/.env && echo ".env записан"'
+
       - name: Restart bot
         if: env.ACTION == 'install' || env.ACTION == 'restart'
         run: |
@@ -43,4 +52,4 @@ jobs:
       - name: Show logs
         run: |
           sshpass -e ssh $SSH_OPTS "root@$HOST" 'journalctl -u bot_raskhody -n 40 --no-pager' \
-            | sed -E 's#/bot[0-9]+:[A-Za-z0-9_-]+/#/bot<TOKEN>/#g'
+            | sed -E 's#[0-9]{8,}:[A-Za-z0-9_-]{30,}#<TOKEN>#g'

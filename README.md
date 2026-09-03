@@ -25,7 +25,7 @@ journalctl -u bot_raskhody -f
 
 Workflow `.github/workflows/deploy.yml` запускается вручную (Actions → Deploy to VPS → Run workflow)
 и по SSH ставит/обновляет бота на сервере. Нужен один секрет в Settings → Secrets and variables → Actions:
-`VPS_PASSWORD` — root-пароль сервера.
+`VPS_PASSWORD` — root-пароль сервера, `TELEGRAM_TOKEN` — токен бота от @BotFather (опционально `CHAD_API_KEY`).
 
 ## Локально
 
