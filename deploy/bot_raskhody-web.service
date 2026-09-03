@@ -1,0 +1,15 @@
+[Unit]
+Description=bot_raskhody Mini App API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/bot
+EnvironmentFile=-/root/bot/.env
+ExecStart=/root/bot/venv/bin/python /root/bot/webapp.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HOST: 201.24.120.213
+      WEBAPP_DOMAIN: ${{ vars.WEBAPP_DOMAIN || '201.24.120.213.sslip.io' }}
       SSHPASS: ${{ secrets.VPS_PASSWORD }}
       ACTION: ${{ inputs.action }}
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -51,21 +52,22 @@ jobs:
         if: env.ACTION == 'install'
         run: |
           sshpass -e ssh $SSH_OPTS "root@$HOST" \
-            "APP_DIR=/root/bot BRANCH=${{ github.ref_name }} bash -s" < deploy/install.sh
+            "APP_DIR=/root/bot BRANCH=${{ github.ref_name }} WEBAPP_DOMAIN=$WEBAPP_DOMAIN bash -s" < deploy/install.sh
 
       - name: Write .env on server
         if: env.ACTION == 'install' && env.TELEGRAM_TOKEN != ''
         run: |
           echo "::add-mask::$TELEGRAM_TOKEN"
-          { printf 'TELEGRAM_TOKEN=%s\n' "$TELEGRAM_TOKEN"; [ -n "$CHAD_API_KEY" ] && printf 'CHAD_API_KEY=%s\n' "$CHAD_API_KEY"; true; } \
+          { printf 'TELEGRAM_TOKEN=%s\n' "$TELEGRAM_TOKEN"; [ -n "$CHAD_API_KEY" ] && printf 'CHAD_API_KEY=%s\n' "$CHAD_API_KEY"; printf 'WEBAPP_URL=https://%s\n' "$WEBAPP_DOMAIN"; } \
             | sshpass -e ssh $SSH_OPTS "root@$HOST" 'cat > /root/bot/.env && chmod 600 /root/bot/.env && echo ".env записан"'
 
       - name: Restart bot
         if: env.ACTION == 'install' || env.ACTION == 'restart'
         run: |
-          sshpass -e ssh $SSH_OPTS "root@$HOST" 'systemctl restart bot_raskhody; sleep 8; echo "service: $(systemctl is-active bot_raskhody)"'
+          sshpass -e ssh $SSH_OPTS "root@$HOST" 'systemctl restart bot_raskhody bot_raskhody-web; sleep 8; echo "bot: $(systemctl is-active bot_raskhody)  web: $(systemctl is-active bot_raskhody-web)"; curl -s -o /dev/null -w "local api: %{http_code}\n" http://127.0.0.1:8080/health'
+          curl -s -o /dev/null -w "https://$WEBAPP_DOMAIN/health -> %{http_code}\n" "https://$WEBAPP_DOMAIN/health" || true
 
       - name: Show logs
         run: |
-          sshpass -e ssh $SSH_OPTS "root@$HOST" 'journalctl -u bot_raskhody -n 40 --no-pager' \
+          sshpass -e ssh $SSH_OPTS "root@$HOST" 'journalctl -u bot_raskhody -n 25 --no-pager; echo "===== web ====="; journalctl -u bot_raskhody-web -n 25 --no-pager' \
             | sed -E 's#[0-9]{8,}:[A-Za-z0-9_-]{30,}#<TOKEN>#g'

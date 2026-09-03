@@ -5,7 +5,7 @@ import datetime
 import logging
 import pytz
 import requests
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo, MenuButtonWebApp
 from telegram.ext import CommandHandler, MessageHandler, Application, filters, CallbackContext
 from telegram.ext import (
     Application,
@@ -21,7 +21,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 if not TELEGRAM_TOKEN:
     raise SystemExit("TELEGRAM_TOKEN не задан: добавьте строку TELEGRAM_TOKEN=... в файл .env рядом с main.py")
-CHAD_API_KEY = "chad-9814409421bc4afda8cb736d7d3403f4de4qu6jf"
+CHAD_API_KEY = os.getenv("CHAD_API_KEY") or "chad-9814409421bc4afda8cb736d7d3403f4de4qu6jf"
+WEBAPP_URL = os.getenv("WEBAPP_URL", "")  # адрес мини-приложения (HTTPS)
 
 # Хранилище трат: локальный файл (Google Таблица отключена)
 EXPENSES_FILE = "expenses.json"
@@ -167,6 +168,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["Расходы за сегодня", "За 7 дней"], ["За 30 дней", "Установить лимит"]]
+    if WEBAPP_URL:
+        keyboard.append([KeyboardButton("📱 Открыть приложение", web_app=WebAppInfo(url=WEBAPP_URL))])
 
     # Получаем текст с лимитами
     limit_text = (
@@ -240,6 +243,10 @@ async def report_30(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(full)
 
 async def post_init(app: Application):
+    if WEBAPP_URL:
+        await app.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="Приложение", web_app=WebAppInfo(url=WEBAPP_URL))
+        )
     scheduler.add_job(
         lambda: app.create_task(send_daily_report(app)),
         "cron",

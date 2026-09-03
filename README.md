@@ -35,3 +35,12 @@ pip install -r requirements.txt
 python main.py
 python -m unittest discover -s tests -v   # тесты
 ```
+
+## Мини-приложение (Telegram Mini App)
+
+`webapp.py` — небольшой API на aiohttp (порт 8080, только localhost) и страница `webapp/index.html`
+в стиле iOS: траты по категориям и периодам, лимиты, добавление/редактирование/удаление.
+Наружу выходит через nginx с сертификатом Let's Encrypt; домен задаётся переменной репозитория
+`WEBAPP_DOMAIN` (по умолчанию `201.24.120.213.sslip.io`). Бот показывает кнопку «Открыть приложение»
+и кнопку меню, если в `.env` есть `WEBAPP_URL`. Запросы к API подписаны Telegram
+([проверка initData](https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app)).
