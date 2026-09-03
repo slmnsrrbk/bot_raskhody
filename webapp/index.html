@@ -107,6 +107,7 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .pf button:active{transform:scale(.96)}
 .pf button.on{background:var(--label);color:var(--bg)}
 .pf button svg{width:15px;height:15px}
+.pf button .pv{margin-left:8px;font-weight:500;opacity:.75}
 .sheet .pf{position:static;padding-left:0;padding-right:0;margin-top:2px;background:transparent}
 .linkbtn{color:var(--blue);font-size:15px;font-weight:500;padding:6px 10px}
 
@@ -237,6 +238,7 @@ button{background:none;border:0;padding:0;cursor:pointer}
     </button>
   </div>
   <input type="file" id="file" accept="image/*" capture="environment" hidden>
+  <input type="file" id="fileGal" accept="image/*" hidden>
 </header>
 
 <main id="app">
@@ -274,7 +276,7 @@ const allCats = () => (state.data && state.data.categories) || Object.keys(CAT);
 const NBSP = " ";
 const fmt = n => Math.round(n).toLocaleString("ru-RU").replace(/\s/g, NBSP) + NBSP + "₽";
 const MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
-const state = { period: "day", range: null, filter: null, data: null, busy:false, earlier:false, days:0 };
+const state = { period: "day", range: null, filter: null, data: null, busy:false, pinned:false, shown:0, ignoreUntil:0 };
 
 /* ---------- Theme ---------- */
 function applyTheme(){
@@ -286,7 +288,7 @@ applyTheme();
 if (tg) { tg.ready(); tg.expand(); tg.onEvent("themeChanged", applyTheme); try{ tg.disableVerticalSwipes && tg.disableVerticalSwipes(); }catch(e){} }
 else matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 
-const haptic = (kind) => { try { if (!tg) return; kind==="ok" ? tg.HapticFeedback.notificationOccurred("success") : kind==="err" ? tg.HapticFeedback.notificationOccurred("error") : tg.HapticFeedback.impactOccurred(kind||"light"); } catch(e){} };
+const haptic = (kind) => { try { if (!tg) return; kind==="ok" ? tg.HapticFeedback.notificationOccurred("success") : kind==="err" ? tg.HapticFeedback.notificationOccurred("error") : kind==="selection" ? tg.HapticFeedback.selectionChanged() : tg.HapticFeedback.impactOccurred(kind||"light"); } catch(e){} };
 
 /* ---------- API ---------- */
 async function api(path, opts={}) {
@@ -362,32 +364,29 @@ function periodLabel(R, t){
 }
 const MONTHS_I = ["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
 /* строка пресетов периода */
-function pillsHtml(){
-  const R = state.data ? currentRange(state.data.today) : null;
+function periodStats(){
+  const d = state.data, R = currentRange(d.today);
+  const cur = R ? d.expenses.filter(x => inRange(x, R.from, R.to)) : d.expenses.filter(x => !!x.iso);
+  const prev = R ? d.expenses.filter(x => inRange(x, R.prevFrom, R.prevTo)) : [];
+  const byCat = {}; cur.forEach(x => { byCat[x.category] = (byCat[x.category]||0) + x.amount; });
+  return { R, cur, total: sum(cur), prevTotal: sum(prev), cats: Object.entries(byCat).sort((a,b)=>b[1]-a[1]) };
+}
+function pillsInner(){
+  const S = state.data ? periodStats() : null, R = S ? S.R : null;
   const customLbl = state.period === "custom" && R ? rangeLabel(R.from, R.to) : "Свой период";
   const cal = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>`;
-  return `<div class="pf" id="pf">${PRESETS.map(([k,l]) => `<button type="button" data-p="${k}" class="${state.period===k?"on":""}">${l}</button>`).join("")}<button type="button" data-p="custom" class="${state.period==="custom"?"on":""}">${cal}${esc(customLbl)}</button></div>`;
+  const lbl = (k, l) => state.period === k && S ? `${l}<span class="num pv">${fmt(S.total)}</span>` : l;
+  return PRESETS.map(([k,l]) => `<button type="button" data-p="${k}" class="${state.period===k?"on":""}">${lbl(k, l)}</button>`).join("")
+    + `<button type="button" data-p="custom" class="${state.period==="custom"?"on":""}">${cal}${lbl("custom", esc(customLbl))}</button>`;
 }
+function pillsHtml(){ return `<div class="pf" id="pf">${pillsInner()}</div>`; }
 function scrollPills(root){
   const on = (root || document).querySelector(".pf button.on"); if (!on) return;
   const box = on.parentElement, x = on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2;
-  box.scrollTo({ left: Math.max(0, x), behavior: "auto" });
+  box.scrollTo({ left: Math.max(0, x), behavior: "smooth" });
 }
-function render(){
-  const d = state.data; if (!d) return;
-  const R = currentRange(d.today);
-  const cur = R ? d.expenses.filter(x => inRange(x, R.from, R.to)) : d.expenses.filter(x => !!x.iso);
-  const prev = R ? d.expenses.filter(x => inRange(x, R.prevFrom, R.prevTo)) : [];
-  const total = cur.reduce((s,x)=>s+x.amount,0);
-  const prevTotal = prev.reduce((s,x)=>s+x.amount,0);
-  const byCat = {};
-  cur.forEach(x => { byCat[x.category] = (byCat[x.category]||0) + x.amount; });
-  const cats = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
-  const t = isoToDate(d.today);
-  document.getElementById("subtitle").textContent = periodLabel(R, t);
-
-  let html = "";
-  /* карточка выбранного периода (по умолчанию — сегодня) */
+function heroInner(){
+  const d = state.data, t = isoToDate(d.today), { R, cur, total, prevTotal, cats } = periodStats();
   let delta = "";
   if (R && prevTotal > 0) {
     const p = Math.round((total - prevTotal) / prevTotal * 100);
@@ -398,11 +397,52 @@ function render(){
   const r = 40, C = 2*Math.PI*r; let off = 0;
   const segs = total ? cats.map(([c,a]) => { const len = a/total*C; const el = `<circle cx="52" cy="52" r="${r}" stroke="${catOf(c).hex}" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"/>`; off += len; return el; }).join("") : `<circle cx="52" cy="52" r="${r}" stroke="var(--fill2)" stroke-dasharray="${C} 0"/>`;
   const heroTitle = state.period === "day" ? "Потрачено сегодня" : "Потрачено · " + periodLabel(R, t);
-  html += pillsHtml();
-  html += `<section class="section"><button type="button" class="card hero" data-act="chart" style="width:100%;text-align:left">
-    <div><div class="lbl">${heroTitle}</div><div class="total num">${fmt(total)}</div>${delta}<div class="tap">${cats.length ? cats.length + " " + plural(cats.length,"категория","категории","категорий") + " · нажмите для деталей" : "нажмите, чтобы выбрать период"}</div></div>
+  return `<button type="button" class="card hero" data-act="chart" style="width:100%;text-align:left">
+    <div><div class="lbl">${heroTitle}</div><div class="total num">${fmt(total)}</div>${delta}<div class="tap">${cats.length ? cats.length + " " + plural(cats.length,"категория","категории","категорий") + " · нажмите для деталей" : "нажмите, чтобы увидеть категории"}</div></div>
     <div class="donut"><svg viewBox="0 0 104 104">${segs}</svg><div class="c"><b class="num">${cur.length}</b>${plural(cur.length,"трата","траты","трат")}</div></div>
-  </button></section>`;
+  </button>`;
+}
+const DAYS_STEP = 60;
+function feedDays(){
+  /* все дни с операциями, новые сверху; фильтр по категории — на всю ленту */
+  const d = state.data;
+  const list = (state.filter ? d.expenses.filter(x=>x.category===state.filter) : d.expenses).filter(x => !!x.iso);
+  const g = {}; list.forEach(x => (g[x.iso] ||= []).push(x));
+  return { groups: g, keys: Object.keys(g).sort().reverse() };
+}
+function dayHtml(k, rows, todayIso){
+  return `<div class="group" data-iso="${k}"><div class="date-h"><span>${dateLabel(k, todayIso)}</span><span class="num">−${fmt(sum(rows))}</span></div><div class="card">${
+    rows.map(x => { const m = catOf(x.category); return `<div class="sw" data-sw="${x.id}">
+      <div class="sw-side sw-left"><button type="button" class="sw-btn edit" data-edit="${x.id}" aria-label="Изменить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button></div>
+      <div class="sw-side sw-right"><button type="button" class="sw-btn del" data-del="${x.id}" aria-label="Удалить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button></div>
+      <div class="sw-c"><button class="row" data-id="${x.id}">
+      <div class="ico" style="background:${m.c}">${m.e}</div>
+      <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}</div></div>
+      <div class="amt num">−${fmt(x.amount)}</div></button></div></div>`; }).join("")}</div></div>`;
+}
+function appendDays(){
+  /* подгрузка следующих дней при прокрутке до конца — без кнопок */
+  const feed = document.getElementById("feed"), sent = document.getElementById("sentinel"); if (!feed || !sent) return;
+  const { groups, keys } = feedDays();
+  const next = keys.slice(state.shown, state.shown + DAYS_STEP);
+  sent.insertAdjacentHTML("beforebegin", next.map(k => dayHtml(k, groups[k], state.data.today)).join(""));
+  state.shown += next.length;
+  if (state.shown >= keys.length) sent.remove();
+}
+let sentinelIO = null;
+function watchSentinel(){
+  if (sentinelIO) sentinelIO.disconnect();
+  const sent = document.getElementById("sentinel"); if (!sent) return;
+  sentinelIO = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) appendDays(); }, { rootMargin: "600px 0px" });
+  sentinelIO.observe(sent);
+}
+function render(){
+  const d = state.data; if (!d) return;
+  const t = isoToDate(d.today);
+  document.getElementById("subtitle").textContent = periodLabel(periodStats().R, t);
+
+  let html = pillsHtml();
+  html += `<section class="section" id="heroSec">${heroInner()}</section>`;
 
   /* лимиты */
   const L = d.limits || {};
@@ -418,50 +458,82 @@ function render(){
   html += `<section class="section"><div class="section-h"><span>Лимиты</span><button data-act="limits">Изменить</button></div>
     <div class="card">${limRows || `<button class="row" data-act="limits"><div class="ico" style="background:var(--green)">🎯</div><div class="main"><div class="name">Установить лимит</div><div class="sub">Бот предупредит, если выйдете за рамки</div></div><svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg></button>`}</div></section>`;
 
-  /* лента: дни выбранного периода, новые сверху; фильтр по категории — на всю ленту; ниже — «Ранее» по запросу */
-  const list = (state.filter ? d.expenses.filter(x=>x.category===state.filter) : d.expenses).filter(x => !!x.iso);
-  const inPeriod = R ? list.filter(x => inRange(x, R.from, R.to)) : list;
-  const earlier = R ? list.filter(x => x.iso < R.from) : [];
-  const groupsOf = arr => { const g = {}; arr.forEach(x => (g[x.iso] ||= []).push(x)); return g; };
-  const groups = groupsOf(inPeriod), keys = Object.keys(groups).sort().reverse();
-  const dayHtml = (k, g) => `<div class="group"><div class="date-h"><span>${dateLabel(k, d.today)}</span><span class="num">−${fmt(sum(g[k]))}</span></div><div class="card">${
-    g[k].map(x => { const m = catOf(x.category); return `<div class="sw" data-sw="${x.id}">
-      <div class="sw-side sw-left"><button type="button" class="sw-btn edit" data-edit="${x.id}" aria-label="Изменить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button></div>
-      <div class="sw-side sw-right"><button type="button" class="sw-btn del" data-del="${x.id}" aria-label="Удалить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button></div>
-      <div class="sw-c"><button class="row" data-id="${x.id}">
-      <div class="ico" style="background:${m.c}">${m.e}</div>
-      <div class="main"><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.category)}</div></div>
-      <div class="amt num">−${fmt(x.amount)}</div></button></div></div>`; }).join("")}</div></div>`;
-  const txHtml = keys.map(k => dayHtml(k, groups)).join("");
-  const title = state.filter ? esc(state.filter) : (R ? "Операции · " + periodLabel(R, t) : "Все операции");
-  const emptyMsg = R
-    ? `<div class="card"><div class="empty"><div class="big">🗓</div>Нет трат ${state.period === "day" ? "за сегодня" : "за этот период"}${state.filter ? " в категории «" + esc(state.filter) + "»" : ""}.${earlier.length ? "" : " Нажмите «+», чтобы добавить, или напишите боту: <b>такси 350</b>"}</div></div>`
+  /* лента: все дни подряд, листается без кнопок; пресеты сверху следуют за прокруткой */
+  const { groups, keys } = feedDays();
+  state.shown = Math.min(keys.length, Math.max(state.shown || 0, DAYS_STEP));
+  const txHtml = keys.slice(0, state.shown).map(k => dayHtml(k, groups[k], d.today)).join("");
+  const title = state.filter ? esc(state.filter) : "Операции";
+  const emptyMsg = state.filter
+    ? `<div class="card"><div class="empty"><div class="big">🗂</div>В категории «${esc(state.filter)}» пока нет трат</div></div>`
     : `<div class="card"><div class="empty"><div class="big">💤</div>Пока пусто. Нажмите «+», чтобы добавить первую трату, или напишите боту: <b>такси 350</b></div></div>`;
-  html += `<section class="section"><div class="section-h"><span>${title}</span><span>${state.filter ? `<button data-act="clear">Сбросить</button> · ` : ""}<button data-act="export">Выгрузить</button></span></div>
-    ${txHtml || emptyMsg}</section>`;
-  /* более ранние операции: по умолчанию свёрнуты, разворачиваются одной кнопкой и листаются дальше */
-  if (earlier.length) {
-    if (!state.earlier) {
-      html += `<div style="text-align:center;padding:0 16px 22px"><button type="button" class="linkbtn" data-act="earlier">Показать более ранние · ${earlier.length} ${plural(earlier.length,"операция","операции","операций")}</button></div>`;
-    } else {
-      const eg = groupsOf(earlier), ek = Object.keys(eg).sort().reverse(), shown = ek.slice(0, state.days || 45);
-      const more = ek.length > shown.length ? `<div style="text-align:center;padding:4px 0 10px"><button type="button" class="linkbtn" data-act="more">Показать ещё ${ek.length - shown.length} ${plural(ek.length - shown.length,"день","дня","дней")}</button></div>` : "";
-      html += `<section class="section"><div class="section-h"><span>Ранее</span><button data-act="collapse">Скрыть</button></div>${shown.map(k => dayHtml(k, eg)).join("")}${more}</section>`;
-    }
-  }
+  html += `<section class="section" id="feed"><div class="section-h"><span>${title}</span><span>${state.filter ? `<button data-act="clear">Сбросить</button> · ` : ""}<button data-act="export">Выгрузить</button></span></div>
+    ${txHtml || emptyMsg}${keys.length > state.shown ? `<div id="sentinel" style="height:1px"></div>` : ""}</section>`;
   html += `<div class="footer"><button data-act="lock" hidden></button></div>`;
   const app = document.getElementById("app");
   app.classList.toggle("first", !state.rendered); state.rendered = true;
   app.innerHTML = html;
   scrollPills(app);
+  watchSentinel();
 }
 const sum = arr => arr.reduce((s,x)=>s+x.amount,0);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const plural = (n,a,b,c) => { n=Math.abs(n)%100; const m=n%10; return n>10&&n<20?c:m>1&&m<5?b:m===1?a:c; };
 
 /* ---------- Период ---------- */
-function setPeriod(p){ state.period = p; state.earlier = false; state.days = 0; render(); }
-function pickPeriod(p, after){ haptic("light"); if (p === "custom") openPeriod(after); else { setPeriod(p); if (after) after(); } }
+function updatePeriodUI(){
+  /* обновляем только пресеты, карточку и подпись — лента и позиция прокрутки не трогаются */
+  if (!state.data) return;
+  const t = isoToDate(state.data.today);
+  document.getElementById("subtitle").textContent = periodLabel(periodStats().R, t);
+  const pf = document.getElementById("pf"); if (pf) { pf.innerHTML = pillsInner(); scrollPills(pf.parentElement); }
+  const hero = document.getElementById("heroSec"); if (hero) hero.innerHTML = heroInner();
+}
+function setPeriod(p, { scroll = true } = {}){
+  state.period = p; state.pinned = true;
+  updatePeriodUI();
+  if (scroll) scrollToPeriod();
+}
+function pickPeriod(p, after){ haptic("light"); if (p === "custom") openPeriod(after); else { setPeriod(p, { scroll: !after }); if (after) after(); } }
+function autoPeriodFor(iso){
+  /* самый узкий пресет, в который попадает день */
+  const t = state.data.today;
+  for (const [k,, fn] of PRESETS) { const ft = fn(t); if (!ft || (iso >= ft[0] && iso <= ft[1])) return k; }
+  return "all";
+}
+function topDayIso(){
+  const pf = document.getElementById("pf"); if (!pf) return null;
+  const line = pf.getBoundingClientRect().bottom + 6;
+  const groups = document.querySelectorAll("#feed .group[data-iso]");
+  for (const g of groups) { const r = g.getBoundingClientRect(); if (r.top <= line && r.bottom > line) return g.dataset.iso; }
+  if (window.scrollY < 80 && groups.length) return groups[0].dataset.iso;   // наверху — считаем первый день
+  return null;
+}
+function syncPeriodToScroll(){
+  if (!state.data || Date.now() < (state.ignoreUntil || 0)) return;
+  const iso = topDayIso(); if (!iso) return;
+  const R = currentRange(state.data.today);
+  const inside = R ? iso >= R.from && iso <= R.to : true;
+  if (state.pinned && inside) return;                    // выбранный вручную период держим, пока листаем внутри него
+  const k = autoPeriodFor(iso);
+  if (k === state.period && !state.pinned) return;
+  state.period = k; state.pinned = false;
+  haptic("selection"); updatePeriodUI();
+}
+let scrollRaf = 0;
+window.addEventListener("scroll", () => { if (scrollRaf) return; scrollRaf = requestAnimationFrame(() => { scrollRaf = 0; syncPeriodToScroll(); }); }, { passive: true });
+window.addEventListener("scrollend", () => { state.ignoreUntil = 0; syncPeriodToScroll(); }, { passive: true });
+function scrollToPeriod(){
+  const R = currentRange(state.data.today);
+  const pf = document.getElementById("pf"), pfH = pf ? pf.getBoundingClientRect().height : 0;
+  const { keys } = feedDays();
+  const idx = R ? keys.findIndex(k => k <= R.to) : 0;
+  if (idx > state.shown - 5) { state.shown = idx + DAYS_STEP; render(); }
+  const target = idx > 0 ? document.querySelector(`#feed .group[data-iso="${keys[idx]}"]`) : null;
+  state.ignoreUntil = Date.now() + 1200;
+  if (!target) { window.scrollTo({ top: 0, behavior: "smooth" }); return; }
+  const top = window.scrollY + target.getBoundingClientRect().top - pfH - 6;
+  window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+}
 
 /* ---------- Clicks ---------- */
 document.getElementById("app").addEventListener("click", e => {
@@ -473,9 +545,6 @@ document.getElementById("app").addEventListener("click", e => {
   if (b.dataset.cat !== undefined) { haptic("light"); state.filter = state.filter === b.dataset.cat ? null : b.dataset.cat; render(); }
   else if (b.dataset.act === "clear") { state.filter = null; render(); }
   else if (b.dataset.p !== undefined) { pickPeriod(b.dataset.p); }
-  else if (b.dataset.act === "earlier") { haptic("light"); state.earlier = true; render(); }
-  else if (b.dataset.act === "collapse") { state.earlier = false; render(); const h = document.querySelector(".hero"); if (h) h.scrollIntoView({behavior:"smooth", block:"start"}); }
-  else if (b.dataset.act === "more") { state.days = (state.days || 45) + 60; render(); }
   else if (b.dataset.act === "limits") { haptic("light"); openLimits(); }
   else if (b.dataset.act === "export") { haptic("light"); openExport(); }
   else if (b.dataset.act === "chart") { haptic("light"); openChart(); }
@@ -668,25 +737,41 @@ const val = id => document.getElementById(id).value;
 
 /* ---------- Чек ---------- */
 const fileInput = document.getElementById("file");
-document.getElementById("scanTop").addEventListener("click", () => {
-  haptic("medium");
-  if (tg && tg.showScanQrPopup && tg.isVersionAtLeast && tg.isVersionAtLeast("6.4")) {
-    // Сначала быстрый сканер QR Telegram; если QR нет — фото чека
-    tg.showScanQrPopup({text: "Наведите на QR-код чека. Если QR нет — закройте и сфотографируйте чек"}, async (data) => {
+const fileGal = document.getElementById("fileGal");
+function pickPhoto(input){ input.value = ""; input.click(); }
+function scanQr(){
+  /* сканер QR Telegram; если он недоступен или упал — камера */
+  if (!(tg && tg.showScanQrPopup && tg.isVersionAtLeast && tg.isVersionAtLeast("6.4"))) { pickPhoto(fileInput); return; }
+  try {
+    tg.showScanQrPopup({text: "Наведите на QR-код чека"}, async (data) => {
       if (!data || !/t=\d{8}T\d{4}/i.test(data)) return false;
-      tg.closeScanQrPopup();
+      try { tg.closeScanQrPopup(); } catch(e){}
       openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
         <div class="empty"><div class="spin"></div><div style="margin-top:14px">Получаю чек по QR…</div></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
       try { const rc = await api("/api/receipt/qr", {method:"POST", body: JSON.stringify({qr: data})}); haptic("ok"); showReceipt(rc); }
       catch(e){ haptic("err"); closeSheet(); toast(e.message); }
       return true;
     });
-    tg.onEvent("scanQrPopupClosed", function once(){ tg.offEvent("scanQrPopupClosed", once); });
-  } else { fileInput.value = ""; fileInput.click(); }
+  } catch(e) { toast("Сканер недоступен, откройте камеру"); pickPhoto(fileInput); }
+}
+document.getElementById("scanTop").addEventListener("click", () => {
+  haptic("medium");
+  const ic = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="width:22px;height:22px;color:var(--blue);margin-right:12px;flex:none">${d}</svg>`;
+  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
+    <div class="hint">По QR-коду позиции подтянутся точно; по фото чек прочитает модель</div>
+    <div class="fields">
+      <button type="button" class="opt" id="optQr"><span style="display:flex;align-items:center">${ic('<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><rect x="8" y="8" width="8" height="8" rx="1.5"/>')}Сканировать QR-код</span></button>
+      <button type="button" class="opt" id="optCam"><span style="display:flex;align-items:center">${ic('<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>')}Сфотографировать чек</span></button>
+      <button type="button" class="opt" id="optGal"><span style="display:flex;align-items:center">${ic('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-8 8"/>')}Выбрать из галереи</span></button>
+    </div>`, () => {
+    document.getElementById("cancel").onclick = closeSheet;
+    document.getElementById("optQr").onclick = () => { haptic("light"); closeSheet(); setTimeout(scanQr, 60); };
+    document.getElementById("optCam").onclick = () => { haptic("light"); closeSheet(); pickPhoto(fileInput); };
+    document.getElementById("optGal").onclick = () => { haptic("light"); closeSheet(); pickPhoto(fileGal); };
+  });
 });
-document.getElementById("scanTop").addEventListener("contextmenu", e => { e.preventDefault(); fileInput.value = ""; fileInput.click(); });
-fileInput.addEventListener("change", async () => {
-  const f = fileInput.files && fileInput.files[0]; if (!f) return;
+document.getElementById("scanTop").addEventListener("contextmenu", e => { e.preventDefault(); pickPhoto(fileInput); });
+async function uploadReceipt(f){
   openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
     <div class="empty"><div class="spin"></div><div style="margin-top:14px">Читаю чек…</div></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
   try {
@@ -697,7 +782,8 @@ fileInput.addEventListener("change", async () => {
     if (!r.ok) throw new Error((body && body.error) || "Ошибка " + r.status);
     haptic("ok"); showReceipt(body);
   } catch(e) { haptic("err"); closeSheet(); toast(e.message); }
-});
+}
+[fileInput, fileGal].forEach(inp => inp.addEventListener("change", () => { const f = inp.files && inp.files[0]; if (f) uploadReceipt(f); }));
 function showReceipt(rc){
   let items = rc.items.slice();
   const render = () => {
@@ -825,7 +911,7 @@ function openPeriod(after){
     document.getElementById("apply").onclick = () => {
       if (from && !to) to = from;
       state.range = from ? {from, to} : null;
-      closeSheet(); setPeriod("custom");
+      closeSheet(); setPeriod("custom", { scroll: !after });
       if (after) setTimeout(after, 50);
     };
   });
