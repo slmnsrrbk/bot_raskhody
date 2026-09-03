@@ -234,6 +234,18 @@ class ProcessExpenseTests(StorageTests):
 
 
 class RatesTests(unittest.TestCase):
+    def setUp(self):
+        from pathlib import Path
+        self._old = (storage.DB_FILE, crypto.KEY_FILE)
+        tmp = Path(tempfile.mkdtemp())
+        storage.DB_FILE, crypto.KEY_FILE = tmp / "r.db", tmp / ".k"
+        crypto.reset_cache(); storage.init_db()
+
+    def tearDown(self):
+        storage.DB_FILE, crypto.KEY_FILE = self._old
+        crypto.reset_cache()
+        __import__("rates").reset_cache()
+
     def test_cbr_fallback_and_convert(self):
         import rates
         from unittest import mock
