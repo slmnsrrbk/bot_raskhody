@@ -233,6 +233,60 @@ class ProcessExpenseTests(StorageTests):
         self.assertIn("handle_voice", names)
 
 
+class RetryRequestTests(unittest.TestCase):
+    """Повтор запросов к Telegram при обрывах связи."""
+
+    def _run(self, causes, url, http_method="POST"):
+        import asyncio
+        import httpx
+        from unittest import mock
+        from telegram.error import TimedOut
+        from telegram.request import HTTPXRequest
+
+        calls = []
+
+        async def fake(self, url, method, *a, **kw):
+            i = len(calls)
+            calls.append(url)
+            if i < len(causes):
+                raise TimedOut() from causes[i]
+            return 200, b"{}"
+
+        req = main.RetryRequest()
+        req.PAUSE = 0            # без пауз в тесте
+        with mock.patch.object(HTTPXRequest, "do_request", fake):
+            try:
+                result = asyncio.run(req.do_request(url, http_method))
+            except TimedOut:
+                result = None
+        return result, len(calls)
+
+    def test_connect_failure_is_retried_even_for_send(self):
+        import httpx
+        result, calls = self._run([httpx.ConnectTimeout("x")], "https://api.telegram.org/botX/sendMessage")
+        self.assertEqual((result, calls), ((200, b"{}"), 2))
+
+    def test_read_timeout_on_send_is_not_retried(self):
+        import httpx
+        result, calls = self._run([httpx.ReadTimeout("x")], "https://api.telegram.org/botX/sendMessage")
+        self.assertEqual((result, calls), (None, 1))          # иначе пришёл бы дубликат сообщения
+
+    def test_read_timeout_on_read_only_method_is_retried(self):
+        import httpx
+        result, calls = self._run([httpx.ReadTimeout("x")] * 2, "https://api.telegram.org/botX/getUpdates")
+        self.assertEqual((result, calls), ((200, b"{}"), 3))
+
+    def test_file_download_is_retried(self):
+        import httpx
+        result, calls = self._run([httpx.ReadTimeout("x")], "https://api.telegram.org/file/botX/voice/f.oga", "GET")
+        self.assertEqual((result, calls), ((200, b"{}"), 2))
+
+    def test_gives_up_after_three_attempts(self):
+        import httpx
+        result, calls = self._run([httpx.ConnectTimeout("x")] * 5, "https://api.telegram.org/botX/sendMessage")
+        self.assertEqual((result, calls), (None, 3))
+
+
 class RatesTests(unittest.TestCase):
     def setUp(self):
         from pathlib import Path

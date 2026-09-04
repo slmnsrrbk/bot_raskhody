@@ -10,9 +10,12 @@ import re
 import sys
 from pathlib import Path
 
+import httpx
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
+from telegram.error import BadRequest, NetworkError, TimedOut
+from telegram.request import HTTPXRequest
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -699,8 +702,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception("Ошибка при обработке обновления: %s", context.error)
     if isinstance(update, Update) and update.effective_message:
+        network = isinstance(context.error, (TimedOut, NetworkError)) and not isinstance(context.error, BadRequest)
+        text = ("🌐 Telegram сейчас не отвечает. Повторите через минуту — данные не потерялись."
+                if network else "⚠️ Произошла ошибка. Попробуйте ещё раз.")
         try:
-            await update.effective_message.reply_text("⚠️ Произошла ошибка. Попробуйте ещё раз.")
+            await update.effective_message.reply_text(text)
         except Exception:  # noqa: BLE001
             pass
 
@@ -753,11 +759,38 @@ async def post_shutdown(app: Application):
         scheduler.shutdown(wait=False)
 
 
+class RetryRequest(HTTPXRequest):
+    """Запросы к Telegram с повтором при обрывах связи.
+
+    Канал сервера с api.telegram.org иногда пропадает на несколько секунд, и вместо ответа
+    приходило «Произошла ошибка». Повторяем только там, где это не создаст дубликат:
+    соединение не установилось (запрос точно не ушёл) либо метод ничего не меняет (GET, get*).
+    """
+
+    ATTEMPTS = 3
+    PAUSE = 1.5
+    NEVER_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+    async def do_request(self, url, method, *args, **kwargs):
+        api_method = url.rsplit("/", 1)[-1]
+        for attempt in range(1, self.ATTEMPTS + 1):
+            try:
+                return await super().do_request(url, method, *args, **kwargs)
+            except (TimedOut, NetworkError) as e:
+                safe = isinstance(e.__cause__, self.NEVER_SENT) or method.upper() == "GET" or api_method.startswith("get")
+                if attempt == self.ATTEMPTS or not safe or isinstance(e, BadRequest):
+                    raise
+                logger.warning("Telegram %s: %s — повтор %s из %s", api_method, e, attempt, self.ATTEMPTS - 1)
+                await asyncio.sleep(self.PAUSE * attempt)
+        raise AssertionError("недостижимо")
+
+
 def build_app(token: str) -> Application:
     app = (
         Application.builder().token(token)
         # скачивание голосовых/фото и отправка файлов идут дольше 5 с по умолчанию
-        .connect_timeout(20).read_timeout(60).write_timeout(60).pool_timeout(20)
+        .request(RetryRequest(connection_pool_size=256, connect_timeout=20, read_timeout=60,
+                              write_timeout=60, pool_timeout=20, media_write_timeout=120))
         .post_init(post_init).post_shutdown(post_shutdown).build()
     )
     T = filters.TEXT & ~filters.COMMAND
