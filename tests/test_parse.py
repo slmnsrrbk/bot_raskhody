@@ -227,6 +227,23 @@ class ProcessExpenseTests(StorageTests):
             items = main.parse_expenses("такси 350", user_id=1)
         self.assertEqual([(i["name"], i["amount"]) for i in items], [("Такси", 350)])
 
+    def test_help_is_available(self):
+        app = main.build_app("123:abc")
+        names = {getattr(h.callback, "__name__", "") for group in app.handlers.values() for h in group}
+        self.assertIn("help_command", names)
+        rows = [[b.text for b in row] for row in main.main_keyboard().keyboard]
+        self.assertIn(main.BTN_HELP, [b for row in rows for b in row])
+        self.assertIn(main.BTN_HELP, main.BUTTON_TEXTS)          # иначе кнопка попадёт в названия категорий
+        text = main.HELP_TEXT
+        self.assertLess(len(text), 4096)                          # предел одного сообщения Telegram
+        import re
+        tags = re.findall(r"</?([a-z]+)>", text)
+        self.assertLessEqual(set(tags), {"b", "code"})            # Telegram понимает не любой HTML
+        for tag in ("b", "code"):
+            self.assertEqual(text.count(f"<{tag}>"), text.count(f"</{tag}>"))
+        for cmd in ("/help", "/undo", "/export"):
+            self.assertIn(cmd, text)
+
     def test_voice_handler_registered(self):
         app = main.build_app("123:abc")
         names = {getattr(h.callback, "__name__", "") for group in app.handlers.values() for h in group}

@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.request import HTTPXRequest
 from telegram import (
+    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -60,8 +61,8 @@ TZ = pytz.timezone(TIMEZONE)
 CATEGORIES = storage.CATEGORIES
 BTN_TODAY, BTN_WEEK, BTN_MONTH = "Расходы за сегодня", "За 7 дней", "За 30 дней"
 BTN_LIMIT, BTN_DELETE, BTN_APP = "Установить лимит", "🗑 Удалить трату", "📱 Открыть приложение"
-BTN_EXPORT = "📥 Выгрузка"
-BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_MONTH, BTN_LIMIT, BTN_DELETE, BTN_EXPORT, BTN_APP, "🔙 Назад",
+BTN_EXPORT, BTN_HELP = "📥 Выгрузка", "❓ Что умею"
+BUTTON_TEXTS = {BTN_TODAY, BTN_WEEK, BTN_MONTH, BTN_LIMIT, BTN_DELETE, BTN_EXPORT, BTN_APP, BTN_HELP, "🔙 Назад",
                 "Ежедневный лимит", "Еженедельный лимит", "Ежемесячный лимит"}
 
 scheduler = AsyncIOScheduler(timezone=TZ)
@@ -166,8 +167,63 @@ def limit_status(user_id: int) -> str:
 def main_keyboard():
     rows = [[BTN_TODAY, BTN_WEEK], [BTN_MONTH, BTN_LIMIT], [BTN_DELETE, BTN_EXPORT]]
     if WEBAPP_URL:
-        rows.append([KeyboardButton(BTN_APP, web_app=WebAppInfo(url=WEBAPP_URL))])
+        rows.append([KeyboardButton(BTN_APP, web_app=WebAppInfo(url=WEBAPP_URL)), BTN_HELP])
+    else:
+        rows.append([BTN_HELP])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+HELP_TEXT = """📖 <b>Что умеет бот</b>
+
+<b>1. Добавить трату — просто напишите</b>
+Шаблон не нужен, разберу свободную фразу:
+• <code>такси 350</code>
+• <code>250 на такси 2 сентября</code>
+• <code>вчера бургер 2800, мойка 700</code>
+• список в несколько строк, где сверху стоит дата
+Суммы понимаю с ₽ и «руб», с пробелами и в виде «1.5к», «2 тыс». Дата может стоять в любом месте фразы: «вчера», «позавчера», «2 сентября», «01.09.2026». Если даты нет — записываю на сегодня.
+
+<b>2. Голосовые</b> 🎙
+Наговорите как есть: «такси триста пятьдесят и вчера кофе двести». Расшифрую, покажу, что услышал, и добавлю все траты. До 3 минут на сообщение.
+
+<b>3. Чеки и фото</b> 📷
+Пришлите фото чека: сначала читаю QR-код и подтягиваю позиции построчно, если QR нет — распознаю чек по изображению. Строку QR можно прислать и текстом.
+Фото списка трат тоже понимаю: заголовки с датами разложу по дням.
+
+<b>4. Категории</b> 🏷
+Еда, Продукты, Транспорт, Машина, Жильё, Телефон, Здоровье, Одежда, Развлечения, Работа, Благотворительность, Непредвиденные, Другое.
+Категорию подбираю сам. Не угадал — нажмите «✏️ Категория» под сообщением, ваш выбор запомню для этого названия. Свои категории тоже можно добавить.
+
+<b>5. Отчёты</b> 📊
+«Расходы за сегодня», «За 7 дней», «За 30 дней» — сумма и доли по категориям, к месячному добавляю короткий совет.
+Сами приходят: итог дня вечером, итог недели в пятницу, итог месяца в последний день.
+
+<b>6. Лимиты</b> 🎯
+«Установить лимит» — на день, неделю и месяц. После каждой траты показываю остаток и предупреждаю о превышении.
+
+<b>7. Исправить и удалить</b> ✏️
+«↩️ Отменить» — сразу под добавленной тратой, отменяет и одну трату, и весь список.
+«🗑 Удалить трату» — выбор из последних. /undo — убрать последнюю.
+
+<b>8. Выгрузка</b> 📥
+«📥 Выгрузка» — файл Excel за выбранный период: все траты, свод по категориям и по месяцам.
+
+<b>9. Приложение</b> 📱
+«📱 Открыть приложение» — лента по дням, диаграмма по категориям, фильтры по периоду, категории и сумме, свайп по строке для правки и удаления, заметки к тратам.
+
+<b>10. Валюта</b> 💱
+Выбирается в приложении: ⚙️ → «Основная валюта», более 150 валют с поиском и избранным. Суммы показываются в ней по актуальному курсу, а каждая трата помнит, в какой валюте была введена.
+
+<b>Данные</b> 🔒
+Название, сумма, категория и заметка хранятся в базе зашифрованными, у каждого свои данные, чужих трат не видно.
+
+<b>Команды</b>
+/start — начать заново
+/help — эта справка
+/undo — удалить последнюю трату
+/delete — выбрать трату для удаления
+/export — выгрузка в Excel
+/id — ваш Telegram ID"""
 
 
 # ---------------------------------------------------------------------------
@@ -212,11 +268,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int
         f"👋 Привет, {update.effective_user.first_name}! Я помогу вести учёт расходов.\n\n"
         "Просто напишите, например: `вчера хлеб 200` или `такси 350`.\n"
         "📷 Пришлите фото чека — я распознаю покупки и добавлю их сами.\n"
-        "🎙 Или запишите голосовое: «такси триста пятьдесят и кофе двести» — добавлю всё, что услышу.\n\n"
+        "🎙 Или запишите голосовое: «такси триста пятьдесят и кофе двести» — добавлю всё, что услышу.\n"
+        "❓ Кнопка «Что умею» внизу или /help — подробная инструкция.\n\n"
         f"{limit_text(user_id)}",
         reply_markup=main_keyboard(),
         parse_mode="Markdown",
     )
+
+
+@guarded
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    await update.message.reply_text(HELP_TEXT, parse_mode="HTML", reply_markup=main_keyboard(),
+                                    disable_web_page_preview=True)
 
 
 async def category_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -745,6 +808,14 @@ async def post_init(app: Application):
         await app.bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(text="Приложение", web_app=WebAppInfo(url=WEBAPP_URL))
         )
+    await app.bot.set_my_commands([
+        BotCommand("start", "Начать заново"),
+        BotCommand("help", "Что умеет бот"),
+        BotCommand("undo", "Удалить последнюю трату"),
+        BotCommand("delete", "Выбрать трату для удаления"),
+        BotCommand("export", "Выгрузка в Excel"),
+        BotCommand("id", "Ваш Telegram ID"),
+    ])
     hour, minute = (int(x) for x in DAILY_REPORT_TIME.split(":"))
     await in_thread(rates.refresh)                                   # курсы валют при старте
     scheduler.add_job(lambda: rates.refresh(), "interval", hours=6)   # и дальше каждые 6 часов
@@ -797,6 +868,7 @@ def build_app(token: str) -> Application:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, category_gate), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", whoami))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("delete", ask_delete))
     app.add_handler(CommandHandler("undo", delete_last))
     app.add_handler(CommandHandler("export", ask_export))
@@ -808,6 +880,7 @@ def build_app(token: str) -> Application:
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_LIMIT}$"), ask_limit_type))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_DELETE}$"), ask_delete))
     app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_EXPORT}$"), ask_export))
+    app.add_handler(MessageHandler(T & filters.Regex(f"^{BTN_HELP}$"), help_command))
     app.add_handler(MessageHandler(T & filters.Regex(r"(?i)^удалить\s+последн"), delete_last))
     app.add_handler(MessageHandler(T & filters.Regex(receipt.QR_RE.pattern), handle_qr_text))
     app.add_handler(MessageHandler(T & filters.Regex(r"(?i)лимит$"), ask_limit_value))

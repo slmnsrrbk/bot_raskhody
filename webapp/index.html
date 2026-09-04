@@ -133,6 +133,10 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .srow .ico svg{width:18px;height:18px}
 .srow .val{margin-left:auto;color:var(--label2);font-size:16px;white-space:nowrap}
 .srow .chev{width:8px;height:14px;color:var(--label3);flex:none;margin-left:auto}
+.hrow{padding:14px 16px;position:relative}
+.hrow + .hrow::before{content:"";position:absolute;left:16px;right:0;top:0;height:.5px;background:var(--sep)}
+.ht{font-size:16px;font-weight:600;margin-bottom:4px}
+.hd{font-size:14px;line-height:1.45;color:var(--label2)}
 .srow .val + .chev{margin-left:0}
 .crow{display:flex;align-items:center;gap:12px;padding:0 12px 0 8px;height:50px;position:relative;width:100%;text-align:left}
 .crow + .crow::before{content:"";position:absolute;left:52px;right:0;top:0;height:.5px;background:var(--sep)}
@@ -928,6 +932,7 @@ function openSettings(){
     <div class="card" style="margin-bottom:18px">
       <button type="button" class="srow" id="sCur">${ic("var(--green)", '<circle cx="12" cy="12" r="9"/><path d="M9 9.5h4.5a2.25 2.25 0 0 1 0 4.5H9M9 8v8M8 14h3"/>')}<span>Основная валюта</span><span class="val">${cur ? esc(cur.code + " · " + (cur.symbol || "")) : esc(st.currency || "RUB")}</span>${CHEV}</button>
       <button type="button" class="srow" id="sLim">${ic("var(--orange)", '<path d="M4.5 16.5A8.5 8.5 0 1 1 19.5 16.5"/><path d="M12 13l3.5-4"/>')}<span>Лимиты</span><span class="val">${lim ? lim + " " + plural(lim,"лимит","лимита","лимитов") : "не заданы"}</span>${CHEV}</button>
+      <button type="button" class="srow" id="sHelp">${ic("var(--blue)", '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.6 2.6 0 1 1 3.2 2.5c-.5.2-.7.6-.7 1.1v.7"/><circle cx="12" cy="16.6" r="1" fill="currentColor" stroke="none"/>')}<span>Как пользоваться</span>${CHEV}</button>
       ${d.user && d.user.is_admin ? `<button type="button" class="srow" id="sAdm">${ic("var(--purple)", '<path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6z"/><path d="M9.5 12l2 2 3.5-4"/>')}<span>Админка</span>${CHEV}</button>` : ""}
     </div>
     ${tg && tg.addToHomeScreen ? `<div class="card" style="margin-bottom:18px"><button type="button" class="srow" id="sHome">${ic("var(--blue)", '<path d="M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10"/>')}<span>Добавить на экран «Домой»</span>${CHEV}</button></div>` : ""}
@@ -936,6 +941,7 @@ function openSettings(){
     document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("sCur").onclick = () => { haptic("light"); openCurrency(); };
     document.getElementById("sLim").onclick = () => { haptic("light"); openLimits(); };
+    document.getElementById("sHelp").onclick = () => { haptic("light"); openHelp(); };
     const a = document.getElementById("sAdm"); if (a) a.onclick = () => { haptic("light"); openAdmin(); };
   });
 }
@@ -1025,6 +1031,27 @@ async function openAdmin(){
     });
   };
   render();
+}
+
+/* ---------- Справка ---------- */
+const HELP = [
+  ["Добавить трату", "Кнопка «+» в шапке или «Добавить трату» внизу: сумма, название, дата и необязательная заметка. Категорию подбираем автоматически, поправить можно позже. Боту в чате можно написать свободной фразой — «250 на такси 2 сентября» — или наговорить голосовое."],
+  ["Чек по фото и QR", "Кнопка сканера в шапке: «Сканировать QR-код» подтягивает позиции чека построчно, «Сфотографировать чек» и «Выбрать из галереи» распознают изображение. Перед добавлением список можно поправить: нажмите на позицию, чтобы изменить сумму, название, дату и категорию, крестик убирает лишнее. Фото списка трат с датами разложится по дням."],
+  ["Периоды", "Ряд кнопок под заголовком: сегодня, вчера, неделя, месяц, этот и прошлый месяц, год, всё время и свой период по календарю. При прокрутке ленты кнопка сама подсвечивает период, в который попадает верхний день, а нажатие на неё прокручивает к началу этого периода. В активной кнопке видна сумма за период."],
+  ["Карточка и диаграмма", "Верхняя карточка показывает сумму за выбранный период и сравнение с предыдущим. Нажатие открывает разбор по категориям: кольцо и список с долями. Нажмите на категорию, чтобы подсветить её, ещё раз — чтобы отфильтровать ленту."],
+  ["Лента и правки", "Операции идут одним списком по дням, новые сверху, следующие дни подгружаются сами. Свайп строки вправо — карандаш (правка), влево — корзина (удаление); длинный свайп влево удаляет сразу, а внизу появляется «Вернуть». Нажатие на строку открывает форму правки."],
+  ["Фильтр", "Кнопка «Фильтр» у заголовка «Операции»: несколько категорий сразу и сумма «от» и «до». Активный фильтр виден над лентой, сбрасывается одной ссылкой."],
+  ["Лимиты", "⚙️ → «Лимиты»: на день, неделю и месяц. Как только лимит задан, над операциями появляется блок с прогрессом, а бот предупреждает о превышении."],
+  ["Валюта", "⚙️ → «Основная валюта»: поиск, избранные и полный список. Суммы показываются в выбранной валюте по актуальному курсу, каждая трата помнит, в какой валюте была введена, поэтому переключение ничего не портит."],
+  ["Выгрузка", "«Выгрузить» у заголовка «Операции» — файл Excel за период: все траты с заметками, свод по категориям и по месяцам. Файл приходит в чат с ботом."],
+  ["Данные", "Название, сумма, категория и заметка хранятся в базе зашифрованными. У каждого пользователя свои данные, чужие траты не видны."],
+];
+function openHelp(){
+  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="back">Назад</button><h2>Как пользоваться</h2><span></span></div>
+    <div class="card">${HELP.map(([t, d]) => `<div class="hrow"><div class="ht">${esc(t)}</div><div class="hd">${esc(d)}</div></div>`).join("")}</div>
+    <div class="hint" style="padding-top:12px">Подробная инструкция по боту — команда /help в чате.</div>`, () => {
+    document.getElementById("back").onclick = () => openSettings();
+  });
 }
 
 /* ---------- Фильтр операций: категории и сумма от/до ---------- */
