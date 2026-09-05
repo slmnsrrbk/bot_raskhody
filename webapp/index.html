@@ -239,9 +239,12 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .25s;z-index:20}
 .backdrop.show{opacity:1;pointer-events:auto}
 .sheet{position:fixed;left:0;right:0;bottom:0;background:var(--sheet);border-radius:20px 20px 0 0;z-index:21;
-  transform:translateY(105%);transition:transform .35s cubic-bezier(.2,.8,.2,1);padding:8px 16px calc(16px + env(safe-area-inset-bottom));max-height:92vh;overflow:auto}
+  transform:translateY(105%);transition:transform .35s cubic-bezier(.2,.8,.2,1);padding:8px 16px calc(16px + env(safe-area-inset-bottom));max-height:92vh;overflow:auto;
+  overscroll-behavior:contain;touch-action:pan-y}
 .sheet.show{transform:none}
 .grab{width:36px;height:5px;border-radius:3px;background:var(--label3);margin:0 auto 10px}
+.sheet .grab{position:relative}
+.sheet .grab::before{content:"";position:absolute;left:-40px;right:-40px;top:-12px;bottom:-12px}   /* зона захвата пошире */
 .sheet-h{display:flex;align-items:center;justify-content:space-between;height:44px;margin-bottom:6px}
 .sheet-h h2{font-size:17px;font-weight:600;margin:0}
 .sheet-h button{color:var(--blue);font-size:17px}
@@ -709,12 +712,15 @@ async function deleteWithUndo(id){
 const sheet = document.getElementById("sheet"), backdrop = document.getElementById("backdrop");
 let sheetOnClose = null;
 function openSheet(html, onOpen){
+  sheet.style.transition = ""; sheet.style.transform = "";      // сбрасываем след предыдущего свайпа
+  sheet.scrollTop = 0;
   sheet.innerHTML = html; sheet.classList.add("show"); backdrop.classList.add("show");
   document.getElementById("mainbtn").hidden = true;
   if (tg) tg.BackButton.show();
   onOpen && onOpen();
 }
 function closeSheet(){
+  sheet.style.transition = ""; sheet.style.transform = "";
   sheet.classList.remove("show"); backdrop.classList.remove("show");
   if (tg) tg.BackButton.hide();
   showMain();
@@ -722,6 +728,41 @@ function closeSheet(){
 }
 backdrop.addEventListener("click", closeSheet);
 if (tg) tg.BackButton.onClick(closeSheet);
+
+/* Свайп вниз закрывает лист — как системная «шторка» на iOS */
+(() => {
+  const S = {y0: 0, x0: 0, dy: 0, ptr: null, watching: false, dragging: false};
+  const CLOSE_AT = 110;                                  // сколько протянуть, чтобы закрыть
+  const put = y => { sheet.style.transform = y ? `translateY(${y}px)` : ""; };
+  sheet.addEventListener("pointerdown", e => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    if (e.target.closest("input, textarea, select")) return;       // не мешаем вводу
+    S.watching = true; S.dragging = false; S.dy = 0; S.ptr = e.pointerId;
+    S.y0 = e.clientY; S.x0 = e.clientX;
+  }, {passive: true});
+  sheet.addEventListener("pointermove", e => {
+    if (!S.watching || e.pointerId !== S.ptr) return;
+    const dy = e.clientY - S.y0, dx = e.clientX - S.x0;
+    if (!S.dragging) {
+      // тянем лист только сверху списка, иначе это обычная прокрутка содержимого
+      if (dy > 8 && dy > Math.abs(dx) * 1.2 && sheet.scrollTop <= 0) { S.dragging = true; sheet.style.transition = "none"; }
+      else if (Math.abs(dy) > 8 || Math.abs(dx) > 8) { S.watching = false; }
+      return;
+    }
+    S.dy = Math.max(0, dy);
+    put(S.dy);
+  }, {passive: true});
+  const finish = e => {
+    if (!S.watching || (e && e.pointerId !== S.ptr)) return;
+    const dragged = S.dragging, dy = S.dy;
+    S.watching = S.dragging = false;
+    if (!dragged) return;
+    sheet.style.transition = "";
+    if (dy > CLOSE_AT) { haptic("light"); closeSheet(); } else put(0);
+  };
+  sheet.addEventListener("pointerup", finish, {passive: true});
+  sheet.addEventListener("pointercancel", finish, {passive: true});
+})();
 function showMain(){ document.getElementById("mainbtn").hidden = false; }
 
 function catPicker(selected){
@@ -815,20 +856,40 @@ const val = id => document.getElementById(id).value;
 const fileInput = document.getElementById("file");
 const fileGal = document.getElementById("fileGal");
 function pickPhoto(input){ input.value = ""; input.click(); }
+/* Строка фискального QR: ключи могут идти в любом порядке */
+const FISCAL_RE = /(?=[\s\S]*\bt=\d{8}T\d{4})(?=[\s\S]*\bfn=\d)(?=[\s\S]*\bi=\d)(?=[\s\S]*\bfp=\d)/i;
+async function receiptByQr(qr){
+  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
+    <div class="empty"><div class="spin"></div><div style="margin-top:14px">Получаю чек по QR…</div></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
+  try { const rc = await api("/api/receipt/qr", {method:"POST", body: JSON.stringify({qr})}); haptic("ok"); showReceipt(rc); }
+  catch(e){ haptic("err"); closeSheet(); toast(e.message); }
+}
 function scanQr(){
   /* сканер QR Telegram; если он недоступен или упал — камера */
   if (!(tg && tg.showScanQrPopup && tg.isVersionAtLeast && tg.isVersionAtLeast("6.4"))) { pickPhoto(fileInput); return; }
+  let done = false;
+  const onEvent = e => finish(e && (e.data !== undefined ? e.data : e));
+  const finish = data => {
+    if (done) return true;
+    done = true;
+    try { tg.offEvent("qrTextReceived", onEvent); } catch(err){}
+    try { tg.closeScanQrPopup(); } catch(err){}          // закрываем всегда: иначе окно висит без объяснений
+    const qr = String(data == null ? "" : data).trim();
+    if (!qr) return true;
+    if (!FISCAL_RE.test(qr)) { haptic("err"); toast("Это не QR кассового чека — сфотографируйте чек целиком"); return true; }
+    receiptByQr(qr);
+    return true;
+  };
+  try { tg.onEvent("qrTextReceived", onEvent); } catch(err){}   // на части версий iOS срабатывает только событие
   try {
-    tg.showScanQrPopup({text: "Наведите на QR-код чека"}, async (data) => {
-      if (!data || !/t=\d{8}T\d{4}/i.test(data)) return false;
-      try { tg.closeScanQrPopup(); } catch(e){}
-      openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
-        <div class="empty"><div class="spin"></div><div style="margin-top:14px">Получаю чек по QR…</div></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
-      try { const rc = await api("/api/receipt/qr", {method:"POST", body: JSON.stringify({qr: data})}); haptic("ok"); showReceipt(rc); }
-      catch(e){ haptic("err"); closeSheet(); toast(e.message); }
-      return true;
-    });
-  } catch(e) { toast("Сканер недоступен, откройте камеру"); pickPhoto(fileInput); }
+    tg.onEvent("scanQrPopupClosed", function closed(){ try { tg.offEvent("scanQrPopupClosed", closed); tg.offEvent("qrTextReceived", onEvent); } catch(err){} done = true; });
+  } catch(err){}
+  try {
+    tg.showScanQrPopup({text: "Наведите на QR-код чека"}, finish);
+  } catch(err) {
+    try { tg.offEvent("qrTextReceived", onEvent); } catch(e2){}
+    toast("Сканер недоступен, открываю камеру"); pickPhoto(fileInput);
+  }
 }
 document.getElementById("scanTop").addEventListener("click", () => {
   haptic("medium");

@@ -95,3 +95,30 @@ class ListPhotoTests(unittest.TestCase):
         self.assertIn("2026-09-03", seen["text"])
         self.assertIn("список трат", seen["text"])
         self.assertEqual(out["items"][0]["date"], "2026-09-02")
+
+
+class QrTextTests(unittest.TestCase):
+    """Строку фискального QR присылают в разном виде: другой порядок ключей, ссылка, лишние слова."""
+
+    GOOD = [
+        "t=20260903T2013&s=518.00&fn=9960440300123456&i=12345&fp=1234567890&n=1",
+        "t=20260903T201300&s=518.00&fn=9960440300123456&i=12345&fp=1234567890&n=1",
+        "s=518.00&fn=9960440300123456&i=12345&fp=1234567890&t=20260903T2013&n=1",
+        "https://consumer.ofd.ru/v1?t=20260903T2013&s=518.00&fn=996044&i=12345&fp=1234567890",
+        "Чек: t=20260903T2013&s=518.00&fn=996044&i=12345&fp=1234567890&n=1 спасибо",
+    ]
+    BAD = ["https://example.com/?a=1&b=2&c=3&d=4", "просто текст", "", "t=20260903T2013&s=518.00"]
+
+    def test_extracts_in_any_order(self):
+        for text in self.GOOD:
+            raw = receipt.find_qr_text(text)
+            self.assertIsNotNone(raw, text)
+            self.assertNotIn(" ", raw)
+            p = receipt.parse_qr(raw)
+            self.assertEqual((p["date"], p["total"]), ("2026-09-03", 518), text)
+            self.assertTrue(receipt.QR_RE.search(text), text)      # тем же фильтром бот ловит текст QR
+
+    def test_ignores_everything_else(self):
+        for text in self.BAD:
+            self.assertIsNone(receipt.find_qr_text(text), text)
+            self.assertFalse(receipt.QR_RE.search(text), text)

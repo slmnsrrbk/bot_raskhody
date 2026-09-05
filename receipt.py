@@ -22,12 +22,21 @@ logger = logging.getLogger("receipt")
 
 PROVERKACHEKA_TOKEN = os.getenv("PROVERKACHEKA_TOKEN", "")
 PROVERKACHEKA_URL = "https://proverkacheka.com/api/v1/check/get"
-QR_RE = re.compile(r"t=\d{8}T\d{4,6}&s=[\d.,]+&fn=\d+&i=\d+&fp=\d+&n=\d", re.I)
+# Параметры фискального QR могут идти в любом порядке, поэтому проверяем набор ключей,
+# а не жёсткую последовательность: t (дата), s (сумма), fn, i, fp (реквизиты чека).
+QR_KEYS = ("t", "fn", "i", "fp")
+QR_RE = re.compile(r"(?is)(?=.*\bt=\d{8}T\d{4})(?=.*\bfn=\d)(?=.*\bi=\d)(?=.*\bfp=\d).")
+_CHUNK_RE = re.compile(r"\S*[a-z]+=[^\s]*", re.I)
 
 
 def find_qr_text(text: str):
-    m = QR_RE.search(text or "")
-    return m.group(0) if m else None
+    """Извлекает строку фискального QR из текста (ссылки, лишние слова и порядок параметров не мешают)."""
+    for chunk in _CHUNK_RE.findall(text or ""):
+        raw = chunk.split("?", 1)[-1].strip().strip(".,;")     # из ссылки берём часть после «?»
+        keys = {k.lower() for k, _ in parse_qsl(raw)}
+        if set(QR_KEYS) <= keys:
+            return raw
+    return None
 
 
 def decode_qr(image_bytes: bytes):
