@@ -242,12 +242,14 @@ button{background:none;border:0;padding:0;cursor:pointer}
   transform:translateY(105%);transition:transform .35s cubic-bezier(.2,.8,.2,1);padding:8px 16px calc(16px + env(safe-area-inset-bottom));max-height:92vh;overflow:auto;
   overscroll-behavior:contain;touch-action:pan-y}
 .sheet.show{transform:none}
-.grab{width:36px;height:5px;border-radius:3px;background:var(--label3);margin:0 auto 10px}
+.grab{width:40px;height:5px;border-radius:3px;background:var(--label3);margin:0 auto 10px;touch-action:none}
 .sheet .grab{position:relative}
 .sheet .grab::before{content:"";position:absolute;left:-40px;right:-40px;top:-12px;bottom:-12px}   /* зона захвата пошире */
-.sheet-h{display:flex;align-items:center;justify-content:space-between;height:44px;margin-bottom:6px}
-.sheet-h h2{font-size:17px;font-weight:600;margin:0}
-.sheet-h button{color:var(--blue);font-size:17px}
+.sheet-h{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;height:44px;margin-bottom:6px;touch-action:none}
+.sheet-h h2{font-size:17px;font-weight:600;margin:0;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sheet-h > *{min-width:0}
+.sheet-h button{color:var(--blue);font-size:17px;white-space:nowrap;justify-self:start}
+.sheet-h > :last-child{justify-self:end}
 .sheet-h button.primary{font-weight:600}
 .sheet-h button:disabled{color:var(--label3)}
 .amount-field{text-align:center;padding:10px 0 6px}
@@ -729,39 +731,73 @@ function closeSheet(){
 backdrop.addEventListener("click", closeSheet);
 if (tg) tg.BackButton.onClick(closeSheet);
 
-/* Свайп вниз закрывает лист — как системная «шторка» на iOS */
+/* Свайп вниз закрывает лист — как системная «шторка» iOS.
+   Только touch-события и обязательно passive:false: указательные (pointer) события на iOS
+   обрываются, как только браузер решает, что это прокрутка, поэтому лист не тянулся.
+   За «ручку» и заголовок тянем всегда (у них touch-action:none), за содержимое — когда
+   список уже прокручен наверх. */
 (() => {
-  const S = {y0: 0, x0: 0, dy: 0, ptr: null, watching: false, dragging: false};
-  const CLOSE_AT = 110;                                  // сколько протянуть, чтобы закрыть
+  const CLOSE_AT = 96, FLING = 0.45;                       // порог в px и скорость в px/мс
+  const S = {id: null, y0: 0, x0: 0, t0: 0, dy: 0, handle: false, watching: false, dragging: false};
   const put = y => { sheet.style.transform = y ? `translateY(${y}px)` : ""; };
-  sheet.addEventListener("pointerdown", e => {
-    if (e.pointerType === "mouse" && e.button !== 0) return;
-    if (e.target.closest("input, textarea, select")) return;       // не мешаем вводу
-    S.watching = true; S.dragging = false; S.dy = 0; S.ptr = e.pointerId;
-    S.y0 = e.clientY; S.x0 = e.clientX;
+  const byId = list => { for (let i = 0; i < list.length; i++) if (list[i].identifier === S.id) return list[i]; return null; };
+  const stop = () => { S.watching = false; S.dragging = false; S.id = null; };
+  let dragEnded = 0;
+  /* после перетаскивания глушим «щелчок», который иначе прилетит на кнопку под пальцем */
+  sheet.addEventListener("click", e => { if (Date.now() - dragEnded < 400) { e.stopPropagation(); e.preventDefault(); } }, true);
+  const done = (dy, dt) => {
+    dragEnded = Date.now();
+    sheet.style.transition = "";
+    if (dy > CLOSE_AT || (dy > 20 && dy / Math.max(1, dt) > FLING)) { haptic("light"); closeSheet(); } else put(0);
+  };
+  sheet.addEventListener("touchstart", e => {
+    if (e.touches.length > 1) { if (S.dragging) put(0); stop(); return; }
+    if (e.target.closest("input, textarea, select")) { stop(); return; }     // не мешаем вводу
+    const t = e.touches[0];
+    S.id = t.identifier; S.y0 = t.clientY; S.x0 = t.clientX; S.t0 = e.timeStamp || Date.now();
+    S.dy = 0; S.dragging = false; S.watching = true;
+    S.handle = !!e.target.closest(".grab, .sheet-h");
   }, {passive: true});
-  sheet.addEventListener("pointermove", e => {
-    if (!S.watching || e.pointerId !== S.ptr) return;
-    const dy = e.clientY - S.y0, dx = e.clientX - S.x0;
+  sheet.addEventListener("touchmove", e => {
+    if (!S.watching) return;
+    const t = byId(e.touches); if (!t) return;
+    const dy = t.clientY - S.y0, dx = t.clientX - S.x0;
     if (!S.dragging) {
-      // тянем лист только сверху списка, иначе это обычная прокрутка содержимого
-      if (dy > 8 && dy > Math.abs(dx) * 1.2 && sheet.scrollTop <= 0) { S.dragging = true; sheet.style.transition = "none"; }
-      else if (Math.abs(dy) > 8 || Math.abs(dx) > 8) { S.watching = false; }
+      if (dy > 6 && (S.handle || (sheet.scrollTop <= 0 && dy > Math.abs(dx)))) { S.dragging = true; sheet.style.transition = "none"; }
+      else if (Math.abs(dy) > 6 || Math.abs(dx) > 6) S.watching = false;
       return;
     }
-    S.dy = Math.max(0, dy);
+    S.dy = Math.max(0, dy - 6);
+    if (e.cancelable) e.preventDefault();                  // забираем жест у прокрутки
     put(S.dy);
-  }, {passive: true});
-  const finish = e => {
-    if (!S.watching || (e && e.pointerId !== S.ptr)) return;
-    const dragged = S.dragging, dy = S.dy;
-    S.watching = S.dragging = false;
-    if (!dragged) return;
-    sheet.style.transition = "";
-    if (dy > CLOSE_AT) { haptic("light"); closeSheet(); } else put(0);
+  }, {passive: false});
+  const end = e => {
+    if (!S.watching) return;
+    const dragged = S.dragging, dy = S.dy, dt = (e.timeStamp || Date.now()) - S.t0;
+    stop();
+    if (dragged) done(dy, dt);
   };
-  sheet.addEventListener("pointerup", finish, {passive: true});
-  sheet.addEventListener("pointercancel", finish, {passive: true});
+  sheet.addEventListener("touchend", end, {passive: true});
+  sheet.addEventListener("touchcancel", end, {passive: true});
+
+  /* тот же жест мышью — десктопный Telegram */
+  let m = null;
+  sheet.addEventListener("mousedown", e => {
+    if (e.button !== 0 || e.target.closest("input, textarea, select")) return;
+    if (!(e.target.closest(".grab, .sheet-h") || sheet.scrollTop <= 0)) return;
+    m = {y0: e.clientY, t0: Date.now(), dy: 0, on: false};
+  });
+  window.addEventListener("mousemove", e => {
+    if (!m) return;
+    const dy = e.clientY - m.y0;
+    if (!m.on) { if (dy > 6) { m.on = true; sheet.style.transition = "none"; } else return; }
+    m.dy = Math.max(0, dy - 6); put(m.dy);
+  });
+  window.addEventListener("mouseup", () => {
+    if (!m) return;
+    const drag = m; m = null;
+    if (drag.on) done(drag.dy, Date.now() - drag.t0);
+  });
 })();
 function showMain(){ document.getElementById("mainbtn").hidden = false; }
 
@@ -859,8 +895,8 @@ function pickPhoto(input){ input.value = ""; input.click(); }
 /* Строка фискального QR: ключи могут идти в любом порядке */
 const FISCAL_RE = /(?=[\s\S]*\bt=\d{8}T\d{4})(?=[\s\S]*\bfn=\d)(?=[\s\S]*\bi=\d)(?=[\s\S]*\bfp=\d)/i;
 async function receiptByQr(qr){
-  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
-    <div class="empty"><div class="spin"></div><div style="margin-top:14px">Получаю чек по QR…</div></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
+  openSheet(`<div class="grab"></div><div class="sheet-h"><span></span><h2>Чек</h2><span></span></div>
+    <div class="empty"><div class="spin"></div><div style="margin-top:14px">Получаю чек по QR…</div></div>`);
   try { const rc = await api("/api/receipt/qr", {method:"POST", body: JSON.stringify({qr})}); haptic("ok"); showReceipt(rc); }
   catch(e){ haptic("err"); closeSheet(); toast(e.message); }
 }
@@ -894,14 +930,13 @@ function scanQr(){
 document.getElementById("scanTop").addEventListener("click", () => {
   haptic("medium");
   const ic = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="width:22px;height:22px;color:var(--blue);margin-right:12px;flex:none">${d}</svg>`;
-  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
+  openSheet(`<div class="grab"></div><div class="sheet-h"><span></span><h2>Чек</h2><span></span></div>
     <div class="hint">По QR-коду позиции подтянутся точно; по фото чек прочитает модель</div>
     <div class="fields">
       <button type="button" class="opt" id="optQr"><span style="display:flex;align-items:center">${ic('<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><rect x="8" y="8" width="8" height="8" rx="1.5"/>')}Сканировать QR-код</span></button>
       <button type="button" class="opt" id="optCam"><span style="display:flex;align-items:center">${ic('<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>')}Сфотографировать чек</span></button>
       <button type="button" class="opt" id="optGal"><span style="display:flex;align-items:center">${ic('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-8 8"/>')}Выбрать из галереи</span></button>
     </div>`, () => {
-    document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("optQr").onclick = () => { haptic("light"); closeSheet(); setTimeout(scanQr, 60); };
     document.getElementById("optCam").onclick = () => { haptic("light"); closeSheet(); pickPhoto(fileInput); };
     document.getElementById("optGal").onclick = () => { haptic("light"); closeSheet(); pickPhoto(fileGal); };
@@ -909,8 +944,8 @@ document.getElementById("scanTop").addEventListener("click", () => {
 });
 document.getElementById("scanTop").addEventListener("contextmenu", e => { e.preventDefault(); pickPhoto(fileInput); });
 async function uploadReceipt(f){
-  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Чек</h2><span></span></div>
-    <div class="empty"><div class="spin"></div><div style="margin-top:14px">Читаю чек…</div></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
+  openSheet(`<div class="grab"></div><div class="sheet-h"><span></span><h2>Чек</h2><span></span></div>
+    <div class="empty"><div class="spin"></div><div style="margin-top:14px">Читаю чек…</div></div>`);
   try {
     const fd = new FormData(); fd.append("image", f, f.name || "receipt.jpg");
     const headers = {}; if (tg && tg.initData) headers["X-Telegram-Init-Data"] = tg.initData;
@@ -940,11 +975,10 @@ function showReceipt(rc){
     if (multi) dates.forEach(d => { list += `<div class="rc-date">${dateLabel(d, today)}</div><div class="card">${items.map((it,i) => it.date === d ? itemHtml(it,i) : "").join("")}</div>`; });
     else list = `<div class="card">${items.map(itemHtml).join("")}</div>`;
     sheet.innerHTML = `<div class="grab"></div>
-      <div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>${esc(title)}</h2><span></span></div>
+      <div class="sheet-h"><span></span><h2>${esc(title)}</h2><span></span></div>
       <div class="hint">${when} · ${items.length} ${plural(items.length,"позиция","позиции","позиций")} · <b class="num">${fmt(total)}</b>${rc.total && rc.total !== total ? ` · в чеке ${fmt(rc.total)}` : ""}${rc.source==="qr"?" · по QR":rc.source==="qr-sum"?" · только сумма из QR":""}<br>Нажмите на позицию, чтобы поправить название, сумму, дату или категорию</div>
       <div id="rcList">${items.length ? list : `<div class="card"><div class="empty">Позиций не осталось</div></div>`}</div>
       <button type="button" class="bigbtn" id="rcAdd" style="margin-top:14px" ${items.length?"":"disabled"}>Добавить ${items.length ? items.length + " " + plural(items.length,"позицию","позиции","позиций") : ""}</button>`;
-    document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("rcList").addEventListener("click", e => {
       const x = e.target.closest("[data-x]");
       if (x) { haptic("light"); items.splice(Number(x.dataset.x),1); render(); return; }
@@ -989,7 +1023,7 @@ function openSettings(){
   const d = state.data, st = d.settings || {}, cur = (d.currencies || []).find(c => c.code === st.currency);
   const L = d.limits || {}, lim = ["daily","weekly","monthly"].filter(k => L[k]).length;
   const ic = (bg, path) => `<div class="ico" style="background:${bg}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg></div>`;
-  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>Настройки</h2><span></span></div>
+  openSheet(`<div class="grab"></div><div class="sheet-h"><span></span><h2>Настройки</h2><span></span></div>
     <div class="card" style="margin-bottom:18px">
       <button type="button" class="srow" id="sCur">${ic("var(--green)", '<circle cx="12" cy="12" r="9"/><path d="M9 9.5h4.5a2.25 2.25 0 0 1 0 4.5H9M9 8v8M8 14h3"/>')}<span>Основная валюта</span><span class="val">${cur ? esc(cur.code + " · " + (cur.symbol || "")) : esc(st.currency || "RUB")}</span>${CHEV}</button>
       <button type="button" class="srow" id="sLim">${ic("var(--orange)", '<path d="M4.5 16.5A8.5 8.5 0 1 1 19.5 16.5"/><path d="M12 13l3.5-4"/>')}<span>Лимиты</span><span class="val">${lim ? lim + " " + plural(lim,"лимит","лимита","лимитов") : "не заданы"}</span>${CHEV}</button>
@@ -999,7 +1033,6 @@ function openSettings(){
     ${tg && tg.addToHomeScreen ? `<div class="card" style="margin-bottom:18px"><button type="button" class="srow" id="sHome">${ic("var(--blue)", '<path d="M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10"/>')}<span>Добавить на экран «Домой»</span>${CHEV}</button></div>` : ""}
     <div class="hint">Суммы показываются в основной валюте по текущему курсу${d.rates && d.rates.date ? ` (${esc(d.rates.source)}, ${esc(d.rates.date)})` : ""}. Каждая трата хранит сумму и валюту, в которых была введена, поэтому смена валюты ничего не портит.</div>`, () => {
     const h = document.getElementById("sHome"); if (h) h.onclick = () => { haptic("light"); try { tg.addToHomeScreen(); } catch(e){ toast("Недоступно в этой версии Telegram"); } };
-    document.getElementById("cancel").onclick = closeSheet;
     document.getElementById("sCur").onclick = () => { haptic("light"); openCurrency(); };
     document.getElementById("sLim").onclick = () => { haptic("light"); openLimits(); };
     document.getElementById("sHelp").onclick = () => { haptic("light"); openHelp(); };
@@ -1049,7 +1082,7 @@ function ago(iso){
   return new Date(iso).toLocaleDateString("ru-RU");
 }
 async function openAdmin(){
-  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>Админка</h2><span></span></div><div class="empty"><div class="spin"></div></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
+  openSheet(`<div class="grab"></div><div class="sheet-h"><span></span><h2>Админка</h2><span></span></div><div class="empty"><div class="spin"></div></div>`);
   let data;
   try { data = await api("/api/admin/overview"); } catch(e){ closeSheet(); toast(e.message); return; }
   let q = "";
@@ -1060,7 +1093,7 @@ async function openAdmin(){
       return `<div class="urow ${u.blocked?"off":""}" data-id="${u.id}"><div class="av">${esc((u.first_name || u.username || "?").slice(0,1).toUpperCase())}</div>
         <div class="main"><div class="name">${esc(u.first_name || "Без имени")}${u.username ? ` <span style="color:var(--label2);font-weight:400">@${esc(u.username)}</span>` : ""}${me ? " · вы" : ""}${u.blocked ? ' <span style="color:var(--red)">· доступ закрыт</span>' : ""}</div><div class="sub">${sub}</div></div>
         ${me ? "" : `<button type="button" class="tg" data-toggle="${u.id}">${u.blocked ? "Открыть" : "Закрыть"}</button>`}</div>`; };
-    sheet.innerHTML = `<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>Админка</h2><span></span></div>
+    sheet.innerHTML = `<div class="grab"></div><div class="sheet-h"><span></span><h2>Админка</h2><span></span></div>
       <div class="stats">
         <div class="stat"><b class="num">${S.total}</b><span>пользователей${S.blocked ? ` · ${S.blocked} без доступа` : ""}</span></div>
         <div class="stat"><b class="num">${S.active_today}</b><span>активны сегодня</span></div>
@@ -1076,7 +1109,6 @@ async function openAdmin(){
       <div class="fields"><div class="field"><label>Поиск</label><input id="uq" placeholder="имя, @username или id" value="${esc(q)}" autocomplete="off"></div></div>
       <div class="card" id="ulist">${users.map(row).join("") || `<div class="empty">Никого не найдено</div>`}</div>
       <div class="hint" style="padding-top:10px">Содержимое трат зашифровано и здесь не показывается. «Закрыть» отключает бота и приложение для пользователя, «Открыть» возвращает доступ.</div>`;
-    document.getElementById("cancel").onclick = closeSheet;
     const inp = document.getElementById("uq");
     inp.addEventListener("input", () => { q = inp.value.trim().toLowerCase(); const pos = inp.selectionStart; render(); const i2 = document.getElementById("uq"); i2.focus(); i2.setSelectionRange(pos, pos); });
     document.getElementById("ulist").addEventListener("click", async e => {
@@ -1105,6 +1137,7 @@ const HELP = [
   ["Лимиты", "⚙️ → «Лимиты»: на день, неделю и месяц. Как только лимит задан, над операциями появляется блок с прогрессом, а бот предупреждает о превышении."],
   ["Валюта", "⚙️ → «Основная валюта»: поиск, избранные и полный список. Суммы показываются в выбранной валюте по актуальному курсу, каждая трата помнит, в какой валюте была введена, поэтому переключение ничего не портит."],
   ["Выгрузка", "«Выгрузить» у заголовка «Операции» — файл Excel за период: все траты с заметками, свод по категориям и по месяцам. Файл приходит в чат с ботом."],
+  ["Окна", "Любая шторка закрывается свайпом вниз: потяните за полоску сверху или за заголовок. Ещё её закрывают кнопка «Назад» в Telegram и нажатие на затемнённую область."],
   ["Данные", "Название, сумма, категория и заметка хранятся в базе зашифрованными. У каждого пользователя свои данные, чужие траты не видны."],
 ];
 function openHelp(){
@@ -1185,7 +1218,7 @@ function openChart(){
     ${cats.length ? `<div class="card legend" id="legend">${cats.map(([c,a]) => `<button type="button" class="row" data-c="${esc(c)}"><div class="ico" style="background:${catOf(c).c};width:30px;height:30px;font-size:15px;border-radius:8px">${catOf(c).e}</div><div class="main"><div class="name">${esc(c)}</div></div><div><div class="amt num">${fmt(a)}</div><div class="sub right num">${(a/total*100).toFixed(1)}%</div></div></button>`).join("")}</div>
     <div class="hint" style="text-align:center;padding-top:10px">Нажмите на категорию ещё раз, чтобы показать её операции</div>` : `<div class="empty">Нет трат за этот период</div>`}`;
   const fresh = !sheet.classList.contains("show") || !document.getElementById("bigchart");
-  if (fresh) openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Закрыть</button><h2>По категориям</h2><span></span></div><div id="chartBody"></div>`, () => { document.getElementById("cancel").onclick = closeSheet; });
+  if (fresh) openSheet(`<div class="grab"></div><div class="sheet-h"><span></span><h2>По категориям</h2><span></span></div><div id="chartBody"></div>`);
   document.getElementById("chartBody").innerHTML = body;
   (() => {
     const pf = document.getElementById("chartBody").querySelector(".pf");
@@ -1283,10 +1316,9 @@ const PERIODS = [["7","Неделя"],["30","Месяц"],["90","3 месяца"
 function openExport(){
   const R = state.data ? currentRange(state.data.today) : null;
   const custom = R ? [["custom", "Выбранный период: " + rangeLabel(R.from, R.to)]] : [];
-  openSheet(`<div class="grab"></div><div class="sheet-h"><button type="button" id="cancel">Отмена</button><h2>Выгрузка в Excel</h2><span></span></div>
+  openSheet(`<div class="grab"></div><div class="sheet-h"><span></span><h2>Выгрузка в Excel</h2><span></span></div>
     <div class="hint">Файл придёт в чат с ботом</div>
     <div class="fields">${custom.concat(PERIODS).map(([k,l]) => `<button type="button" class="opt" data-k="${k}"><span>${l}</span><svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l6 6-6 6"/></svg></button>`).join("")}</div>`, () => {
-    document.getElementById("cancel").onclick = closeSheet;
     sheet.querySelectorAll(".opt").forEach(b => b.onclick = async () => {
       if (state.busy) return;
       try { state.busy = true; haptic("light"); toast("Готовлю файл…");
