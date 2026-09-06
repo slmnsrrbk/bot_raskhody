@@ -168,6 +168,7 @@ async def api_state(request: web.Request):
     return web.json_response({
         "today": today().isoformat(),
         "categories": storage.all_categories(uid),
+        "custom_categories": storage.user_categories(uid),
         "limits": storage.get_limits(uid),
         "expenses": storage.list_expenses(uid),
         "user": {"id": uid, "first_name": request["user"].get("first_name", ""), "is_admin": is_admin(uid, request["user"].get("username"))},
@@ -293,16 +294,25 @@ async def api_categories_add(request: web.Request):
         name = storage.add_user_category(uid, body.get("name", ""))
     except ValueError as e:
         raise _error(web.HTTPBadRequest, str(e))
-    return web.json_response({"categories": storage.all_categories(uid), "added": name}, status=201)
+    return web.json_response({"categories": storage.all_categories(uid), "custom_categories": storage.user_categories(uid), "added": name}, status=201)
 
 
 async def api_categories_delete(request: web.Request):
+    """Удаляет свою категорию; траты из неё переносит в ?to=… (по умолчанию «Другое»)."""
     uid = request["user_id"]
-    name = request.match_info["name"]
+    name = storage.normalize_category(request.match_info["name"])
     if name in CATEGORIES:
         raise _error(web.HTTPBadRequest, "Базовую категорию удалить нельзя")
-    storage.remove_user_category(uid, name)
-    return web.json_response({"categories": storage.all_categories(uid)})
+    own = {c.lower(): c for c in storage.user_categories(uid)}
+    if name.lower() not in own:
+        raise _error(web.HTTPNotFound, "Такой категории нет")
+    name = own[name.lower()]
+    to = storage.normalize_category(request.query.get("to") or "") or "Другое"
+    if to.lower() == name.lower() or to.lower() not in {c.lower() for c in storage.all_categories(uid)}:
+        to = "Другое"
+    moved = storage.remove_user_category(uid, name, to)
+    return web.json_response({"categories": storage.all_categories(uid), "custom_categories": storage.user_categories(uid),
+                              "moved": moved, "to": to})
 
 
 async def api_bulk(request: web.Request):

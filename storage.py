@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS user_categories (
 );
 CREATE TABLE IF NOT EXISTS category_cache (
     name      TEXT PRIMARY KEY,
-    category  TEXT NOT NULL
+    category  TEXT NOT NULL,
+    user_id   INTEGER
 );
 """
 
@@ -108,6 +109,9 @@ def init_db():
         if "currency" not in cols:                  # до мультивалютности всё вводилось в рублях
             con.execute("ALTER TABLE expenses ADD COLUMN currency TEXT")
             con.execute("UPDATE expenses SET currency='RUB' WHERE currency IS NULL")
+        ccols = {r[1] for r in con.execute("PRAGMA table_info(category_cache)").fetchall()}
+        if "user_id" not in ccols:                  # чтобы личный кэш можно было чистить при удалении категории
+            con.execute("ALTER TABLE category_cache ADD COLUMN user_id INTEGER")
         ucols = {r[1] for r in con.execute("PRAGMA table_info(users)").fetchall()}
         if "blocked" not in ucols:
             con.execute("ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
@@ -348,9 +352,34 @@ def add_user_category(user_id: int, name: str) -> str:
     return n
 
 
-def remove_user_category(user_id: int, name: str):
+def count_in_category(user_id: int, name: str) -> int:
+    n = normalize_category(name).lower()
     with connect() as con:
-        con.execute("DELETE FROM user_categories WHERE user_id=? AND name=?", (user_id, name))
+        rows = con.execute("SELECT category FROM expenses WHERE user_id=?", (user_id,)).fetchall()
+    return sum(1 for r in rows if str(crypto.decrypt(user_id, r["category"]) or "").lower() == n)
+
+
+def move_category(user_id: int, frm: str, to: str) -> int:
+    """Переносит траты из одной категории в другую; возвращает число изменённых записей."""
+    frm_n, to_n = normalize_category(frm).lower(), _valid_category(user_id, to)
+    if not frm_n or frm_n == to_n.lower():
+        return 0
+    with connect() as con:
+        rows = con.execute("SELECT id, category FROM expenses WHERE user_id=?", (user_id,)).fetchall()
+        ids = [r["id"] for r in rows if str(crypto.decrypt(user_id, r["category"]) or "").lower() == frm_n]
+        for i in ids:
+            con.execute("UPDATE expenses SET category=? WHERE id=?", (_enc(user_id, to_n), i))
+    return len(ids)
+
+
+def remove_user_category(user_id: int, name: str, move_to: str = "Другое") -> int:
+    """Удаляет свою категорию. Траты из неё переносит в move_to; возвращает их число."""
+    n = normalize_category(name)
+    moved = move_category(user_id, n, move_to)
+    with connect() as con:
+        con.execute("DELETE FROM user_categories WHERE user_id=? AND name=?", (user_id, n))
+        con.execute("DELETE FROM category_cache WHERE user_id=? AND category=?", (user_id, n))
+    return moved
 
 
 def _valid_category(user_id: int, category) -> str:
@@ -585,7 +614,7 @@ def cache_get(name: str, user_id=None):
 
 def cache_set(name: str, category: str, user_id=None):
     with connect() as con:
-        con.execute("INSERT OR REPLACE INTO category_cache(name, category) VALUES(?,?)", (_cache_key(name, user_id), category))
+        con.execute("INSERT OR REPLACE INTO category_cache(name, category, user_id) VALUES(?,?,?)", (_cache_key(name, user_id), category, user_id))
 
 
 def add_expenses_bulk(user_id: int, items):

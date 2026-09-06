@@ -66,6 +66,37 @@ class WebAppApiTests(AioHTTPTestCase):
         self.assertEqual(r.status, 200)
         self.assertEqual(len(webapp.storage.list_expenses(0)), 2)
 
+    async def test_custom_category_add_and_delete(self):
+        r = await self.client.post("/api/categories", json={"name": "  подписки "})
+        self.assertEqual(r.status, 201)
+        d = await r.json()
+        self.assertEqual(d["added"], "Подписки")
+        self.assertEqual(d["custom_categories"], ["Подписки"])
+
+        r = await self.client.post("/api/expenses", json={"name": "нетфликс", "amount": 800, "category": "Подписки", "date": "2026-09-01"})
+        self.assertEqual((await r.json())["category"], "Подписки")
+
+        # базовую удалить нельзя, чужой/несуществующей — нечего
+        self.assertEqual((await self.client.delete("/api/categories/Еда")).status, 400)
+        self.assertEqual((await self.client.delete("/api/categories/Выдумка")).status, 404)
+
+        r = await self.client.delete("/api/categories/Подписки?to=Развлечения")
+        self.assertEqual(r.status, 200)
+        d = await r.json()
+        self.assertEqual((d["moved"], d["to"], d["custom_categories"]), (1, "Развлечения", []))
+        self.assertNotIn("Подписки", d["categories"])
+        moved = [x for x in webapp.storage.list_expenses(0) if x["name"] == "Нетфликс"]
+        self.assertEqual(moved[0]["category"], "Развлечения")   # трата на месте, категория новая
+        self.assertEqual(len(webapp.storage.list_expenses(0)), 3)
+
+    async def test_delete_category_defaults_to_other(self):
+        await self.client.post("/api/categories", json={"name": "Хобби"})
+        await self.client.post("/api/expenses", json={"name": "краски", "amount": 300, "category": "Хобби", "date": "2026-09-01"})
+        r = await self.client.delete("/api/categories/Хобби?to=Хобби")     # переносить в саму себя нельзя
+        d = await r.json()
+        self.assertEqual((d["moved"], d["to"]), (1, "Другое"))
+        self.assertEqual([x["category"] for x in webapp.storage.list_expenses(0) if x["name"] == "Краски"], ["Другое"])
+
     async def test_currency_conversion_and_switch(self):
         r = await self.client.post("/api/expenses", json={"name": "отель", "amount": 100, "category": "Другое", "date": "2026-09-01", "currency": "USD"})
         item = await r.json()

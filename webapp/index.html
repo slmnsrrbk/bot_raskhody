@@ -160,6 +160,15 @@ button{background:none;border:0;padding:0;cursor:pointer}
 .bars div{flex:1;background:var(--blue);border-radius:4px 4px 2px 2px;min-height:3px;opacity:.85;position:relative}
 .bars div i{position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:10px;font-style:normal;color:var(--label2)}
 .bars-l{display:flex;gap:6px;padding:0 4px 14px}.bars-l span{flex:1;text-align:center;font-size:10px;color:var(--label3)}
+.catrow{display:flex;align-items:center;gap:12px;padding:8px 14px;position:relative}
+.catrow + .catrow::before{content:"";position:absolute;left:60px;right:0;top:0;height:.5px;background:var(--sep)}
+.catrow .ico{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:17px;flex:none}
+.catrow .main{flex:1;min-width:0}
+.catrow .name{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.catrow .sub{font-size:12px;color:var(--label2)}
+.catrow .rm{width:30px;height:30px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--red);border-radius:50%;background:var(--fill)}
+.catrow .rm svg{width:15px;height:15px}
+.catrow.base .name{color:var(--label2)}
 .urow{display:flex;align-items:center;gap:12px;padding:10px 14px;position:relative}
 .urow + .urow::before{content:"";position:absolute;left:62px;right:0;top:0;height:.5px;background:var(--sep)}
 .urow .av{width:36px;height:36px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;flex:none}
@@ -343,6 +352,7 @@ const CAT = {
 const EXTRA_COLORS = ["#FF6B6B","#4ECDC4","#FFB703","#8338EC","#3A86FF","#FB5607","#06D6A0","#EF476F","#118AB2","#F4A261"];
 const catOf = c => CAT[c] || { e:"🏷️", c: EXTRA_COLORS[[...String(c)].reduce((a,ch)=>a+ch.charCodeAt(0),0) % EXTRA_COLORS.length], hex: EXTRA_COLORS[[...String(c)].reduce((a,ch)=>a+ch.charCodeAt(0),0) % EXTRA_COLORS.length] };
 const allCats = () => (state.data && state.data.categories) || Object.keys(CAT);
+const myCats = () => (state.data && state.data.custom_categories) || [];
 const NBSP = " ";
 const curSym = () => (state.data && state.data.settings && state.data.settings.symbol) || "₽";
 const curCode = () => (state.data && state.data.settings && state.data.settings.currency) || "RUB";
@@ -1022,10 +1032,12 @@ const CHEV = `<svg class="chev" viewBox="0 0 8 14" fill="none" stroke="currentCo
 function openSettings(){
   const d = state.data, st = d.settings || {}, cur = (d.currencies || []).find(c => c.code === st.currency);
   const L = d.limits || {}, lim = ["daily","weekly","monthly"].filter(k => L[k]).length;
+  const myCatsCount = myCats().length;
   const ic = (bg, path) => `<div class="ico" style="background:${bg}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg></div>`;
   openSheet(`<div class="grab"></div><div class="sheet-h"><span></span><h2>Настройки</h2><span></span></div>
     <div class="card" style="margin-bottom:18px">
       <button type="button" class="srow" id="sCur">${ic("var(--green)", '<circle cx="12" cy="12" r="9"/><path d="M9 9.5h4.5a2.25 2.25 0 0 1 0 4.5H9M9 8v8M8 14h3"/>')}<span>Основная валюта</span><span class="val">${cur ? esc(cur.code + " · " + (cur.symbol || "")) : esc(st.currency || "RUB")}</span>${CHEV}</button>
+      <button type="button" class="srow" id="sCat">${ic("var(--indigo)", '<path d="M3 12.5V5a2 2 0 0 1 2-2h7.5L21 11.5 12.5 20z"/><circle cx="8.2" cy="7.8" r="1.3"/>')}<span>Категории</span><span class="val">${myCatsCount ? myCatsCount + " " + plural(myCatsCount,"своя","свои","своих") : "только базовые"}</span>${CHEV}</button>
       <button type="button" class="srow" id="sLim">${ic("var(--orange)", '<path d="M4.5 16.5A8.5 8.5 0 1 1 19.5 16.5"/><path d="M12 13l3.5-4"/>')}<span>Лимиты</span><span class="val">${lim ? lim + " " + plural(lim,"лимит","лимита","лимитов") : "не заданы"}</span>${CHEV}</button>
       <button type="button" class="srow" id="sHelp">${ic("var(--blue)", '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.6 2.6 0 1 1 3.2 2.5c-.5.2-.7.6-.7 1.1v.7"/><circle cx="12" cy="16.6" r="1" fill="currentColor" stroke="none"/>')}<span>Как пользоваться</span>${CHEV}</button>
       ${d.user && d.user.is_admin ? `<button type="button" class="srow" id="sAdm">${ic("var(--purple)", '<path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6z"/><path d="M9.5 12l2 2 3.5-4"/>')}<span>Админка</span>${CHEV}</button>` : ""}
@@ -1034,6 +1046,7 @@ function openSettings(){
     <div class="hint">Суммы показываются в основной валюте по текущему курсу${d.rates && d.rates.date ? ` (${esc(d.rates.source)}, ${esc(d.rates.date)})` : ""}. Каждая трата хранит сумму и валюту, в которых была введена, поэтому смена валюты ничего не портит.</div>`, () => {
     const h = document.getElementById("sHome"); if (h) h.onclick = () => { haptic("light"); try { tg.addToHomeScreen(); } catch(e){ toast("Недоступно в этой версии Telegram"); } };
     document.getElementById("sCur").onclick = () => { haptic("light"); openCurrency(); };
+    document.getElementById("sCat").onclick = () => { haptic("light"); openCategories(); };
     document.getElementById("sLim").onclick = () => { haptic("light"); openLimits(); };
     document.getElementById("sHelp").onclick = () => { haptic("light"); openHelp(); };
     const a = document.getElementById("sAdm"); if (a) a.onclick = () => { haptic("light"); openAdmin(); };
@@ -1070,6 +1083,70 @@ function openCurrency(){
       catch(err){ haptic("err"); toast(err.message); }
     });
   });
+}
+
+/* ---------- Свои категории: добавить и удалить ---------- */
+const TRASH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M9.5 6V4h5v2M6.5 6l1 14h9l1-14M10.5 10v6M13.5 10v6"/></svg>`;
+function openCategories(){
+  const counts = () => { const u = {}; ((state.data && state.data.expenses) || []).forEach(x => { u[x.category] = (u[x.category] || 0) + 1; }); return u; };
+  const catRow = (c, used, own) => { const m = catOf(c), n = used[c] || 0;
+    return `<div class="catrow ${own ? "" : "base"}">
+      <div class="ico" style="background:${m.c}">${m.e}</div>
+      <div class="main"><div class="name">${esc(c)}</div><div class="sub">${n ? n + " " + plural(n,"трата","траты","трат") : "нет трат"}</div></div>
+      ${own ? `<button type="button" class="rm" data-del="${esc(c)}" aria-label="Удалить категорию">${TRASH}</button>` : ""}</div>`; };
+
+  const draw = () => {
+    const used = counts(), my = myCats(), base = allCats().filter(c => !my.includes(c));
+    sheet.innerHTML = `<div class="grab"></div><div class="sheet-h"><button type="button" id="back">Назад</button><h2>Категории</h2><span></span></div>
+      <div class="hint" style="padding-left:4px">Свои</div>
+      <div class="card" style="margin-bottom:10px">${my.length ? my.map(c => catRow(c, used, true)).join("") : `<div class="empty" style="padding:22px 20px">Своих категорий пока нет</div>`}</div>
+      <div class="fields" id="addBox" hidden><div class="field"><label>Новая</label><input id="newCatName" placeholder="Название" maxlength="30" autocomplete="off" autocapitalize="sentences"></div></div>
+      <button type="button" class="opt" id="addCat" style="background:var(--field);border-radius:12px;margin-bottom:18px;color:var(--blue)"><span>＋ Новая категория</span></button>
+      <div class="hint" style="padding-left:4px">Базовые</div>
+      <div class="card">${base.map(c => catRow(c, used, false)).join("")}</div>
+      <div class="hint" style="padding-top:12px">Базовые категории удалить нельзя. При удалении своей категории траты из неё не пропадают — переносятся в ту, которую вы выберете.</div>`;
+    document.getElementById("back").onclick = () => openSettings();
+    const box = document.getElementById("addBox"), btn = document.getElementById("addCat"), inp = document.getElementById("newCatName");
+    const add = async () => {
+      const name = inp.value.trim();
+      if (!name) { box.hidden = true; btn.querySelector("span").textContent = "＋ Новая категория"; return; }
+      try { setBusy(true); await api("/api/categories", {method:"POST", body: JSON.stringify({name})}); haptic("ok"); toast("Категория добавлена"); await load(false); draw(); }
+      catch(e){ haptic("err"); toast(e.message); } finally { setBusy(false); }
+    };
+    btn.onclick = () => { haptic("light");
+      if (box.hidden) { box.hidden = false; btn.querySelector("span").textContent = "Добавить"; inp.focus(); } else add(); };
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); add(); } });
+    sheet.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { haptic("medium"); askDelete(b.dataset.del, used[b.dataset.del] || 0); });
+  };
+
+  const remove = async (c, to) => {
+    try { setBusy(true); const r = await api(`/api/categories/${encodeURIComponent(c)}?to=${encodeURIComponent(to)}`, {method:"DELETE"});
+      haptic("ok"); toast(r.moved ? `Удалено · ${r.moved} ${plural(r.moved,"трата","траты","трат")} в «${r.to}»` : "Категория удалена");
+      await load(false); draw();
+    } catch(e){ haptic("err"); toast(e.message); draw(); } finally { setBusy(false); }
+  };
+
+  const askDelete = (c, n) => {
+    if (!n) {
+      const msg = `Удалить категорию «${c}»?`;
+      if (tg && tg.showConfirm) tg.showConfirm(msg, ok => ok && remove(c, "Другое"));
+      else if (confirm(msg)) remove(c, "Другое");
+      return;
+    }
+    const pick = allCats().filter(x => x !== c);
+    sheet.scrollTop = 0;
+    sheet.innerHTML = `<div class="grab"></div><div class="sheet-h"><button type="button" id="back">Назад</button><h2>Удалить «${esc(c)}»</h2><span></span></div>
+      <div class="hint">В этой категории ${n} ${plural(n,"трата","траты","трат")}. Ничего не потеряется — выберите, куда перенести</div>
+      <div class="cats" id="cats">${pick.map(x => { const m = catOf(x); return `<button type="button" class="cat ${x==="Другое"?"sel":""}" data-c="${esc(x)}"><div class="ico" style="background:${m.c}">${m.e}</div>${esc(x)}</button>`; }).join("")}</div>
+      <button type="button" class="danger" id="rmGo">Удалить и перенести</button>`;
+    document.getElementById("back").onclick = draw;
+    const box = document.getElementById("cats");
+    box.addEventListener("click", e => { const b = e.target.closest(".cat"); if (!b) return; haptic("light");
+      box.querySelectorAll(".cat").forEach(x => x.classList.toggle("sel", x === b)); });
+    document.getElementById("rmGo").onclick = () => { const sel = box.querySelector(".cat.sel"); remove(c, sel ? sel.dataset.c : "Другое"); };
+  };
+
+  openSheet("", draw);
 }
 
 /* ---------- Админка владельца ---------- */
@@ -1134,6 +1211,7 @@ const HELP = [
   ["Карточка и диаграмма", "Верхняя карточка показывает сумму за выбранный период и сравнение с предыдущим. Нажатие открывает разбор по категориям: кольцо и список с долями. Нажмите на категорию, чтобы подсветить её, ещё раз — чтобы отфильтровать ленту."],
   ["Лента и правки", "Операции идут одним списком по дням, новые сверху, следующие дни подгружаются сами. Свайп строки вправо — карандаш (правка), влево — корзина (удаление); длинный свайп влево удаляет сразу, а внизу появляется «Вернуть». Нажатие на строку открывает форму правки."],
   ["Фильтр", "Кнопка «Фильтр» у заголовка «Операции»: несколько категорий сразу и сумма «от» и «до». Активный фильтр виден над лентой, сбрасывается одной ссылкой."],
+  ["Свои категории", "Категорию можно завести прямо при правке траты («＋ Своя»), а список всех — в ⚙️ → «Категории»: там же своя категория удаляется. Траты из удалённой категории не пропадают: приложение спросит, куда их перенести. Базовые категории удалить нельзя."],
   ["Лимиты", "⚙️ → «Лимиты»: на день, неделю и месяц. Как только лимит задан, над операциями появляется блок с прогрессом, а бот предупреждает о превышении."],
   ["Валюта", "⚙️ → «Основная валюта»: поиск, избранные и полный список. Суммы показываются в выбранной валюте по актуальному курсу, каждая трата помнит, в какой валюте была введена, поэтому переключение ничего не портит."],
   ["Выгрузка", "«Выгрузить» у заголовка «Операции» — файл Excel за период: все траты с заметками, свод по категориям и по месяцам. Файл приходит в чат с ботом."],
