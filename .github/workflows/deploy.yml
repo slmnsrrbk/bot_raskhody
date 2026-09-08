@@ -45,6 +45,12 @@ jobs:
           echo "== nginx/caddy/apache =="; for b in nginx caddy apache2 httpd; do command -v $b >/dev/null && echo "$b: installed"; done; true
           echo "== nginx sites =="; ls /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null; true
           echo "== certs =="; ls /etc/letsencrypt/live 2>/dev/null || echo "no letsencrypt"; true
+          for c in /etc/letsencrypt/live/*/fullchain.pem; do [ -f "$c" ] && echo "$c: $(openssl x509 -noout -subject -enddate -in "$c" | tr '\n' ' ')"; done; true
+          echo "== renew timer =="; systemctl list-timers --no-pager --no-legend 2>/dev/null | grep -i certbot || echo "нет таймера certbot"; true
+          echo "== TLS снаружи =="; echo | openssl s_client -connect 127.0.0.1:443 -servername "$WEBAPP_DOMAIN" 2>/dev/null | openssl x509 -noout -subject -dates 2>/dev/null || echo "рукопожатие не удалось"; true
+          echo "== nginx конфиг раскодов =="; nginx -T 2>/dev/null | awk '/server_name .*sslip/,/^}/' | head -40; true
+          echo "== nginx errors =="; tail -25 /var/log/nginx/error.log 2>/dev/null || echo "нет error.log"; true
+          echo "== nginx access (последние 25) =="; tail -25 /var/log/nginx/access.log 2>/dev/null || echo "нет access.log"; true
           echo "== hostname =="; hostname -f 2>/dev/null; true
           echo "== bot =="; systemctl is-active bot_raskhody; ls -la /root/bot | grep -E 'json|\.env'; true
           echo "== firewall =="; command -v ufw >/dev/null && ufw status | head -15 || echo "no ufw"; true
