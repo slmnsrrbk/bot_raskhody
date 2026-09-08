@@ -51,6 +51,8 @@ jobs:
           echo "== nginx конфиг раскодов =="; nginx -T 2>/dev/null | awk '/server_name .*sslip/,/^}/' | head -40; true
           echo "== nginx errors =="; tail -25 /var/log/nginx/error.log 2>/dev/null || echo "нет error.log"; true
           echo "== nginx access (последние 25) =="; tail -25 /var/log/nginx/access.log 2>/dev/null || echo "нет access.log"; true
+          echo "== ответы 5xx в логе =="; awk '$9 ~ /^5/' /var/log/nginx/access.log 2>/dev/null | tail -15; echo "всего 5xx: $(awk '$9 ~ /^5/' /var/log/nginx/access.log 2>/dev/null | wc -l)"; true
+          echo "== запросы приложения за сутки =="; grep -c "iPhone\|Android" /var/log/nginx/access.log 2>/dev/null; grep "iPhone\|Android" /var/log/nginx/access.log 2>/dev/null | awk '{print $9}' | sort | uniq -c | sort -rn; true
           echo "== hostname =="; hostname -f 2>/dev/null; true
           echo "== bot =="; systemctl is-active bot_raskhody; ls -la /root/bot | grep -E 'json|\.env'; true
           echo "== firewall =="; command -v ufw >/dev/null && ufw status | head -15 || echo "no ufw"; true
