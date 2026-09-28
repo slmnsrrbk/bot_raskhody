@@ -351,6 +351,21 @@ const CAT = {
 };
 const EXTRA_COLORS = ["#FF6B6B","#4ECDC4","#FFB703","#8338EC","#3A86FF","#FB5607","#06D6A0","#EF476F","#118AB2","#F4A261"];
 const catOf = c => CAT[c] || { e:"🏷️", c: EXTRA_COLORS[[...String(c)].reduce((a,ch)=>a+ch.charCodeAt(0),0) % EXTRA_COLORS.length], hex: EXTRA_COLORS[[...String(c)].reduce((a,ch)=>a+ch.charCodeAt(0),0) % EXTRA_COLORS.length] };
+/* Сумма как её пишут: «1000», «1 000», «1.000», «12 500,50», «1,5к». Точка и пробел между
+   тройками цифр — разряды, а не копейки; правила те же, что у бота (parsing.to_amount). */
+function toAmount(value){
+  let s = String(value == null ? "" : value).trim().toLowerCase().replace(/[\s   '’]/g, "");
+  let mult = 1;
+  for (const [suffix, factor] of [["кк",1e6],["млн",1e6],["миллион",1e6],["тыс",1e3],["тысяч",1e3],["к",1e3],["k",1e3]]) {
+    if (s.endsWith(suffix) || s.endsWith(suffix + ".")) { mult = factor; s = s.slice(0, s.length - suffix.length - (s.endsWith(".") ? 1 : 0)); break; }
+  }
+  if (/^\d+([.,]\d+)*$/.test(s)) {
+    const p = s.split(/[.,]/);
+    if (p.length > 1) s = (p[0].length <= 3 && p.slice(1).every(x => x.length === 3)) ? p.join("") : p.slice(0, -1).join("") + "." + p[p.length - 1];
+  }
+  const n = Math.round(parseFloat(s) * mult);
+  return isFinite(n) && n > 0 && n <= 100000000 ? n : null;
+}
 const allCats = () => (state.data && state.data.categories) || Object.keys(CAT);
 const myCats = () => (state.data && state.data.custom_categories) || [];
 const NBSP = " ";
@@ -875,7 +890,7 @@ function confirmDel(id, item){
 async function submit(payload, method, url, msg){
   if (state.busy) return;
   if (!payload.name.trim()) return toast("Введите название"), haptic("err");
-  if (!(parseFloat(String(payload.amount).replace(",", ".")) > 0)) return toast("Введите сумму"), haptic("err");
+  if (!toAmount(payload.amount)) return toast("Введите сумму"), haptic("err");
   try { setBusy(true); const saved = await api(url, {method, body: JSON.stringify(payload)}); haptic("ok"); closeSheet(); toast(saved && saved.category && !payload.category ? `${msg} · ${saved.category}` : msg); await load(false); }
   catch(e){ haptic("err"); toast(e.message); } finally { setBusy(false); }
 }
@@ -1013,7 +1028,7 @@ function showReceipt(rc){
       <button type="button" class="danger" id="rm">Убрать из списка</button>`;
     const getCat = bindCats();
     const done = () => {
-      const name = val("name").trim(), amount = Math.round(parseFloat(String(val("amount")).replace(",", ".")));
+      const name = val("name").trim(), amount = toAmount(val("amount"));
       if (!name) return toast("Введите название"), haptic("err");
       if (!(amount > 0)) return toast("Введите сумму"), haptic("err");
       items[i] = { name, amount, category: getCat() || it.category, date: val("date") || it.date, currency: it.currency };
@@ -1245,7 +1260,7 @@ function openFilter(){
   const f = state.filter || {}, sel = new Set(f.cats || []);
   const cats = allCats().slice();
   (state.data.expenses.map(x => x.category)).forEach(c => { if (!cats.includes(c)) cats.push(c); });
-  const num = v => { const n = parseFloat(String(v).replace(/\s/g, "").replace(",", ".")); return isFinite(n) && n >= 0 ? Math.round(n) : null; };
+  const num = v => (String(v).trim() ? toAmount(v) : null);
   const count = () => { const min = num(val("fmin")), max = num(val("fmax")); const cs = sel.size ? sel : null;
     return state.data.expenses.filter(x => !!x.iso && (!cs || cs.has(x.category)) && (min == null || x.amount >= min) && (max == null || x.amount <= max)).length; };
   openSheet(`<div class="grab"></div>

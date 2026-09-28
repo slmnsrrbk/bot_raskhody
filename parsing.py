@@ -9,32 +9,92 @@
     12500
     2 сентября: такси 350, кофе 150₽
 Строка с датой («вчера», «сегодня», «позавчера», «01.09», «01.09.2026», «2 сентября») задаёт дату
-для последующих строк. Сумма может стоять в конце или в начале строки, с ₽/руб/р, с пробелами
-(«12 500») и копейками; если строка без числа, а следующая — только число, они объединяются.
+для последующих строк. Сумма может стоять в конце или в начале строки, с символом валюты, с любыми
+разделителями разрядов («12 500», «12.500», «12'500»), с копейками и с сокращениями («1,5к», «2 тыс»);
+если строка без числа, а следующая — только число, они объединяются.
 """
 import datetime
 import re
 
 DATE_WORDS = {"сегодня": 0, "вчера": 1, "позавчера": 2}
 MONTHS = {"янв": 1, "фев": 2, "мар": 3, "апр": 4, "ма": 5, "июн": 6, "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12}
-CURRENCY = r"(?:₽|руб(?:лей|ля|\.)?|р\.?|rub)?"
-NUM = r"\d{1,3}(?:[ \u00a0]\d{3})+|\d+"
-AMOUNT_END = re.compile(rf"^(?P<name>.*?)[\s:\-–—]*(?P<amt>(?:{NUM})(?:[.,]\d{{1,2}})?)\s*{CURRENCY}\s*$", re.I)
-AMOUNT_START = re.compile(rf"^(?P<amt>(?:{NUM})(?:[.,]\d{{1,2}})?)\s*{CURRENCY}\s*[\-–—:]?\s*(?P<name>.+?)\s*$", re.I)
-AMOUNT_MID = re.compile(rf"^(?P<a>[^\d]+?)\s+(?P<amt>(?:{NUM})(?:[.,]\d{{1,2}})?)\s*{CURRENCY}\s+(?P<b>[^\d]+?)\s*$", re.I)
-ONLY_AMOUNT = re.compile(rf"^(?P<amt>(?:{NUM})(?:[.,]\d{{1,2}})?)\s*{CURRENCY}\s*$", re.I)
+
+# Валюта рядом с суммой: символ или слово -> код ISO. Пишется слитно или через пробел.
+CURRENCIES = [
+    (r"₽|руб(?:лей|лях|ля|\.)?|р\.?|rub", "RUB"),
+    (r"\$|usd|долл(?:ар(?:ов|а|ы)?)?|бакс(?:ов|а)?", "USD"),
+    (r"€|eur|евро", "EUR"),
+    (r"₸|kzt|тенге", "KZT"),
+    (r"₴|uah|гривен|гривны|грн", "UAH"),
+    (r"₺|try|лир(?:ы|у)?", "TRY"),
+    (r"£|gbp|фунт(?:ов|а)?", "GBP"),
+    (r"¥|cny|юан(?:ей|я|и)?", "CNY"),
+    (r"₾|gel|лари", "GEL"),
+    (r"֏|amd|драм(?:ов|а)?", "AMD"),
+    (r"₹|inr|рупий", "INR"),
+    (r"฿|thb|бат(?:ов|а)?", "THB"),
+    (r"aed|дирхам(?:ов|а)?", "AED"),
+    (r"uzs|сум(?:ов|а)?", "UZS"),
+]
+CURRENCY = "(?P<cur>" + "|".join(p for p, _ in CURRENCIES) + ")?"
+CUR_RE = [(re.compile(rf"^(?:{p})$", re.I), code) for p, code in CURRENCIES]
+
+# Разделители разрядов: пробел (в т.ч. неразрывный и тонкий), апостроф, точка, запятая.
+THIN = r" \u00a0\u202f\u2009'’"
+NUM = rf"\d{{1,3}}(?:[{THIN}.,]\d{{3}})+(?:[.,]\d{{1,2}})?|\d+(?:[.,]\d{{1,2}})?"
+MULT = r"(?:\s*(?:кк|к|k|тыс\.?|тысяч[иа]?|тысяча|млн\.?|миллион(?:ов|а)?)(?![а-яёa-z]))?"
+AMT = rf"(?P<amt>(?:{NUM}){MULT})"
+AMOUNT_END = re.compile(rf"^(?P<name>.*?)[\s:\-–—]*{AMT}\s*{CURRENCY}\s*$", re.I)
+AMOUNT_START = re.compile(rf"^{AMT}\s*{CURRENCY}\s*[\-–—:]?\s*(?P<name>.+?)\s*$", re.I)
+AMOUNT_MID = re.compile(rf"^(?P<a>[^\d]+?)\s+{AMT}\s*{CURRENCY}\s+(?P<b>[^\d]+?)\s*$", re.I)
+ONLY_AMOUNT = re.compile(rf"^{AMT}\s*{CURRENCY}\s*$", re.I)
 DATE_NUMERIC = re.compile(r"^(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?$")
 DATE_TEXT = re.compile(r"^(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?$", re.I)
 MAX_AMOUNT = 100_000_000
+MULTIPLIERS = [("кк", 1_000_000), ("млн", 1_000_000), ("миллион", 1_000_000),
+               ("тыс", 1000), ("тысяч", 1000), ("к", 1000), ("k", 1000)]
 
 
-def _amount(s: str):
-    s = s.replace(" ", "").replace("\u00a0", "").replace(",", ".")
+def _digits(s: str) -> str:
+    """«1.000», «12 500», «1'234'567,89», «1,234.56» -> строка с точкой как десятичным разделителем."""
+    if not re.fullmatch(r"\d+(?:[.,]\d+)*", s):
+        return s
+    parts = re.split(r"[.,]", s)
+    if len(parts) == 1:
+        return s
+    # только разряды, если каждая группа после первой — ровно три цифры, а первая не длиннее трёх
+    if len(parts[0]) <= 3 and all(len(p) == 3 for p in parts[1:]):
+        return "".join(parts)
+    return "".join(parts[:-1]) + "." + parts[-1]
+
+
+def to_amount(value):
+    """Сумма из любой записи: «1.000», «12 500,50», «1,5к», «2 тыс», 1000 -> int или None."""
+    s = str(value if value is not None else "").strip().lower()
+    s = re.sub(rf"[{THIN}]", "", s)
+    mult = 1
+    for suffix, factor in MULTIPLIERS:
+        if s.endswith(suffix) or s.endswith(suffix + "."):
+            mult = factor
+            s = s[:len(s) - len(suffix) - (1 if s.endswith(".") else 0)]
+            break
     try:
-        v = int(round(float(s)))
+        v = int(round(float(_digits(s)) * mult))
     except ValueError:
         return None
     return v if 0 < v <= MAX_AMOUNT else None
+
+
+_amount = to_amount          # прежнее внутреннее имя
+
+
+def _currency(token):
+    if not token:
+        return None
+    for rx, code in CUR_RE:
+        if rx.match(token.strip()):
+            return code
+    return None
 
 
 def parse_date_token(token: str, today: datetime.date):
@@ -86,25 +146,32 @@ def _clean_name(name: str) -> str:
 
 
 def parse_line(line: str):
-    """-> (name, amount) или None."""
+    """-> (name, amount, currency|None) или None."""
     line = line.strip()
     m = AMOUNT_END.match(line)
     if m and _clean_name(m.group("name")):
-        amt = _amount(m.group("amt"))
+        amt = to_amount(m.group("amt"))
         if amt:
-            return _clean_name(m.group("name")), amt
+            return _clean_name(m.group("name")), amt, _currency(m.group("cur"))
     m = AMOUNT_START.match(line)
     if m and _clean_name(m.group("name")) and not re.search(r"\d", m.group("name")[:1]):
-        amt = _amount(m.group("amt"))
+        amt = to_amount(m.group("amt"))
         if amt:
-            return _clean_name(m.group("name")), amt
+            return _clean_name(m.group("name")), amt, _currency(m.group("cur"))
     m = AMOUNT_MID.match(line)          # «Мясо 7500 продукты» — сумма посередине
     if m:
-        amt = _amount(m.group("amt"))
+        amt = to_amount(m.group("amt"))
         name = _clean_name(m.group("a") + " " + m.group("b"))
         if amt and name:
-            return name, amt
+            return name, amt, _currency(m.group("cur"))
     return None
+
+
+def _item(name, amount, date, currency=None):
+    it = {"name": name, "amount": amount, "date": date}
+    if currency:
+        it["currency"] = currency          # валюта указана в тексте явно («100$»)
+    return it
 
 
 def parse_free_text(text: str, today: datetime.date):
@@ -144,19 +211,19 @@ def parse_free_text(text: str, today: datetime.date):
         if len(parts) > 1:
             sub = [parse_line(p) for p in parts]
             if all(sub):
-                items.extend({"name": n, "amount": a, "date": use_date} for n, a in sub)
+                items.extend(_item(n, a, use_date, c) for n, a, c in sub)
                 pending_name = None
                 continue
         parsed = parse_line(rest)
         if parsed:
-            items.append({"name": parsed[0], "amount": parsed[1], "date": use_date})
+            items.append(_item(parsed[0], parsed[1], use_date, parsed[2]))
             pending_name = None
             continue
         m = ONLY_AMOUNT.match(rest)
         if m and pending_name:
-            amt = _amount(m.group("amt"))
+            amt = to_amount(m.group("amt"))
             if amt:
-                items.append({"name": pending_name, "amount": amt, "date": use_date})
+                items.append(_item(pending_name, amt, use_date, _currency(m.group("cur"))))
                 pending_name = None
                 continue
         if not re.search(r"\d", rest):

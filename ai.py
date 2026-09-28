@@ -10,6 +10,7 @@ import re
 
 import requests
 
+import parsing
 import storage
 
 logger = logging.getLogger("ai")
@@ -198,7 +199,9 @@ EXPENSES_PROMPT = (
     "Сегодня {today}. «Вчера» — {yesterday}, «позавчера» — {before_yesterday}. Даты вроде «2 сентября», «02.09», «01.09.2026» переводи в ГГГГ-ММ-ДД "
     "(без года — ближайшая прошедшая дата). Дата может стоять в любом месте фразы: «250 на такси 2 сентября» — это name «такси», amount 250, date — ближайшее прошедшее 2 сентября. "
     "Строка с датой относится ко всем тратам ниже неё, пока не встретится другая дата. Если дата не указана — {today}. "
-    "Сумма может стоять до или после названия, с ₽/руб/р, «1 500», «1.5к», «2 тыс». "
+    "Сумма может стоять до или после названия, с символом валюты или без. Точка, пробел и апостроф между цифрами — "
+    "разделители разрядов, а не дробная часть: «1.000» и «1 000» = 1000, «12.500» = 12500, «1,5к» и «1.5к» = 1500, «2 тыс» = 2000. "
+    "Дробная часть — это только одна-две цифры в конце («150,50» = 150.5). В amount верни число без разделителей. "
     "В name пиши только предмет траты без предлогов, дат и сумм («на такси» → «такси», «купил продукты» → «продукты»). "
     "Если в сообщении нет трат с суммами, верни []."
 )
@@ -253,11 +256,8 @@ def parse_expenses_text(text: str, today, spoken: bool = False, categories=None)
         if not isinstance(it, dict):
             continue
         name = str(it.get("name") or "").strip()
-        try:
-            amount = int(round(float(str(it.get("amount", "")).replace(",", ".").replace(" ", ""))))
-        except ValueError:
-            continue
-        if not name or amount <= 0:
+        amount = parsing.to_amount(it.get("amount"))     # «1.000», «12 500,50», «1,5к» — как в тексте
+        if not name or not amount:
             continue
         try:
             date = storage.to_iso(it.get("date") or today)
@@ -366,11 +366,8 @@ def _clean_receipt(parsed: dict) -> dict:
         if not isinstance(it, dict):
             continue
         name = str(it.get("name") or "").strip()
-        try:
-            amount = int(round(float(str(it.get("amount", "")).replace(",", ".").replace(" ", ""))))
-        except ValueError:
-            continue
-        if not name or amount <= 0:
+        amount = parsing.to_amount(it.get("amount"))     # «1.000», «12 500,50», «1,5к» — как в тексте
+        if not name or not amount:
             continue
         cat = str(it.get("category") or "").strip().capitalize()
         if cat not in CATEGORIES:

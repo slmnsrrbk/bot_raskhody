@@ -22,6 +22,7 @@ import aiohttp
 import ai
 import export
 import receipt
+import parsing
 import storage
 import currencies
 import rates
@@ -143,13 +144,14 @@ def today() -> datetime.date:
 
 
 def parse_amount(value) -> int:
-    try:
-        amount = int(round(float(str(value).replace(",", ".").replace(" ", "").replace("\u00a0", ""))))
-    except ValueError:
-        raise _error(web.HTTPBadRequest, "Сумма должна быть числом")
-    if amount <= 0 or amount > 100_000_000:
+    """Сумма как её пишут: «1000», «1 000», «1.000», «12 500,50», «1,5к»."""
+    raw = str(value if value is not None else "").strip()
+    amount = parsing.to_amount(raw)
+    if amount:
+        return amount
+    if any(ch.isdigit() for ch in raw):
         raise _error(web.HTTPBadRequest, "Сумма должна быть больше нуля")
-    return amount
+    raise _error(web.HTTPBadRequest, "Сумма должна быть числом")
 
 
 def parse_date(value) -> str:

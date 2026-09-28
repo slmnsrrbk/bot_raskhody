@@ -66,6 +66,19 @@ class WebAppApiTests(AioHTTPTestCase):
         self.assertEqual(r.status, 200)
         self.assertEqual(len(webapp.storage.list_expenses(0)), 2)
 
+    async def test_amount_with_separators(self):
+        r = await self.client.post("/api/expenses", json={"name": "компы", "amount": "1.000", "category": "Другое", "date": "2026-09-01"})
+        self.assertEqual(r.status, 201)
+        self.assertEqual((await r.json())["amount"], 1000)
+        r = await self.client.post("/api/expenses", json={"name": "ноут", "amount": "12 500,50", "category": "Другое", "date": "2026-09-01"})
+        self.assertEqual((await r.json())["amount"], 12500)
+        r = await self.client.post("/api/expenses", json={"name": "ремонт", "amount": "1,5к", "category": "Другое", "date": "2026-09-01"})
+        self.assertEqual((await r.json())["amount"], 1500)
+        r = await self.client.post("/api/expenses", json={"name": "ошибка", "amount": "ноль", "category": "Другое", "date": "2026-09-01"})
+        self.assertEqual(r.status, 400)
+        r = await self.client.post("/api/expenses", json={"name": "ошибка", "amount": "0", "category": "Другое", "date": "2026-09-01"})
+        self.assertEqual(r.status, 400)
+
     async def test_custom_category_add_and_delete(self):
         r = await self.client.post("/api/categories", json={"name": "  подписки "})
         self.assertEqual(r.status, 201)

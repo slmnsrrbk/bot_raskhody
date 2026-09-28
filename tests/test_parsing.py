@@ -37,6 +37,33 @@ class FreeTextTests(unittest.TestCase):
         items, _ = parsing.parse_free_text("Молоко 2,5% 930мл 80", T)
         self.assertEqual((items[0]["name"], items[0]["amount"]), ("Молоко 2,5% 930мл", 80))
 
+    def test_thousand_separators(self):
+        """«1.000₽» — тысяча: точка, пробел и апостроф разделяют разряды."""
+        items, unparsed = parsing.parse_free_text("Развлечение 1.000₽\nКомпы 1.000₽\nНоут 1'500\nМясо 12.500 руб\nМашина 1 234 567", T)
+        self.assertEqual(unparsed, [])
+        self.assertEqual([(i["name"], i["amount"]) for i in items],
+                         [("Развлечение", 1000), ("Компы", 1000), ("Ноут", 1500), ("Мясо", 12500), ("Машина", 1234567)])
+
+    def test_short_amounts(self):
+        items, unparsed = parsing.parse_free_text("такси 1,5к\n2 тыс продукты\nРемонт 3 млн", T)
+        self.assertEqual(unparsed, [])
+        self.assertEqual([(i["name"], i["amount"]) for i in items], [("Такси", 1500), ("Продукты", 2000), ("Ремонт", 3000000)])
+
+    def test_multiplier_is_not_eaten_from_the_name(self):
+        items, _ = parsing.parse_free_text("350 кофе\n700 кино", T)
+        self.assertEqual([(i["name"], i["amount"]) for i in items], [("Кофе", 350), ("Кино", 700)])
+
+    def test_currency_from_text(self):
+        items, _ = parsing.parse_free_text("Отель 100$\nУжин 25 €\nТакси 2 000₸\nХлеб 40", T)
+        self.assertEqual([(i["amount"], i.get("currency")) for i in items],
+                         [(100, "USD"), (25, "EUR"), (2000, "KZT"), (40, None)])
+
+    def test_to_amount(self):
+        for raw, want in [("1.000", 1000), ("1 000", 1000), ("12.500", 12500), ("1,5к", 1500), ("2 тыс", 2000),
+                          ("150,50", 150), ("1.000.000", 1000000), ("1,234.56", 1235), ("1.234,56", 1235),
+                          (1000, 1000), ("0", None), ("-5", None), ("три", None)]:
+            self.assertEqual(parsing.to_amount(raw), want, raw)
+
 
 if __name__ == "__main__":
     unittest.main()
