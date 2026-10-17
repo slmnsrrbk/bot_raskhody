@@ -28,6 +28,13 @@ AI_API_KEY = os.environ["AI_API_KEY"]
 AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "8"))
+# пауза перед ответом, секунды: обычно от MIN до MAX, иногда «отвлёкся» до LONG_PAUSE_MAX
+REPLY_DELAY_MIN = float(os.getenv("REPLY_DELAY_MIN", "20"))
+REPLY_DELAY_MAX = float(os.getenv("REPLY_DELAY_MAX", "180"))
+LONG_PAUSE_CHANCE = float(os.getenv("LONG_PAUSE_CHANCE", "0.15"))
+LONG_PAUSE_MAX = float(os.getenv("LONG_PAUSE_MAX", "600"))
+# если переписка живая (отвечали недавно), отвечаем быстрее
+ACTIVE_CHAT_SECONDS = 300
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "30"))
 TAKEOVER_MINUTES = float(os.getenv("TAKEOVER_MINUTES", "60"))
 
@@ -54,6 +61,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /memory @username — что бот помнит о человеке
 /forget @username — стереть эту память
 /persona текст — общая инструкция: кто ты, чем занимаешься, тон
+/delay 20 180 — пауза перед ответом, от и до, в секундах
 /model — какая нейросеть отвечает; /model название — сменить её
 /on, /off — включить или выключить бота целиком
 Вместо @username можно указать числовой ID."""
@@ -116,7 +124,9 @@ def build_system_prompt(goal: str, name: str, memory: str = "") -> str:
         "- Если прямо спросят, бот ли ты, честно скажи, что это ИИ-ассистент владельца.\n"
         f"- Если вопрос требует решения владельца или ты не знаешь ответа, "
         f"ответь ровно {HANDOFF} и ничего больше.\n"
-        "- Отвечай только текстом следующего сообщения, без пометок вроде «Я:»."
+        "- Отвечай только текстом следующего сообщения, без пометок вроде «Я:».\n"
+        "- Как живой человек в мессенджере, можешь разбить ответ на 2–3 коротких "
+        "сообщения, разделив их пустой строкой. Не делай так каждый раз."
     )
 
 
@@ -195,6 +205,33 @@ pending: dict[int, asyncio.Task] = {}   # chat_id -> отложенный отв
 bot_sent_ids: set[int] = set()          # id сообщений, отправленных ботом
 bot_sending: set[int] = set()           # чаты, куда бот прямо сейчас отправляет
 takeover_until: dict[int, float] = {}   # chat_id -> до какого времени молчать
+last_incoming: dict[int, float] = {}    # chat_id -> когда собеседник писал последний раз
+last_reply: dict[int, float] = {}       # chat_id -> когда бот отвечал последний раз
+
+
+def human_delay(chat_id: int) -> float:
+    """Сколько «не замечать» сообщение: каждый раз по-разному, как у живого человека."""
+    lo = state.get("delay_min", REPLY_DELAY_MIN)
+    hi = state.get("delay_max", REPLY_DELAY_MAX)
+    if time.time() - last_reply.get(chat_id, 0) < ACTIVE_CHAT_SECONDS:
+        # уже переписываемся — отвечаем быстрее, но тоже не мгновенно
+        return random.uniform(5, max(10, lo * 1.5))
+    if random.random() < LONG_PAUSE_CHANCE:
+        return random.uniform(hi, max(hi, LONG_PAUSE_MAX))
+    # короткие паузы чаще длинных
+    return lo + (hi - lo) * random.random() ** 2
+
+
+def typing_seconds(text: str) -> float:
+    # на телефоне люди набирают примерно 4–7 символов в секунду
+    return max(2.0, min(len(text) / random.uniform(4, 7), 45))
+
+
+def split_parts(answer: str) -> list[str]:
+    parts = [p.strip() for p in answer.split("\n\n") if p.strip()]
+    if len(parts) > 3:
+        parts = parts[:2] + ["\n\n".join(parts[2:])]
+    return parts or [answer]
 
 
 def describe(msg) -> str:
@@ -228,7 +265,13 @@ async def load_history(chat_id: int) -> list[dict]:
 
 async def reply_later(chat_id: int, user: User, key: str):
     try:
-        await asyncio.sleep(DEBOUNCE_SECONDS)
+        delay = human_delay(chat_id)
+        log.info("Отвечу %s примерно через %d с", key, delay)
+        await asyncio.sleep(delay)
+        # если человек ещё пишет, даём ему договорить
+        while time.time() - last_incoming.get(chat_id, 0) < DEBOUNCE_SECONDS:
+            await asyncio.sleep(DEBOUNCE_SECONDS)
+
         contact = state["contacts"].get(key)
         if not contact or not state["enabled"]:
             return
@@ -239,8 +282,9 @@ async def reply_later(chat_id: int, user: User, key: str):
 
         name = " ".join(filter(None, [user.first_name, user.last_name])) or key
         system = build_system_prompt(contact["goal"], name, contact.get("memory", ""))
-        answer = await ask_ai(system, history)
         await client.send_read_acknowledge(chat_id)
+        await asyncio.sleep(random.uniform(2, 8))  # прочитал, думает
+        answer = await ask_ai(system, history)
 
         if HANDOFF in answer:
             await client.send_message(
@@ -250,15 +294,18 @@ async def reply_later(chat_id: int, user: User, key: str):
             )
             return
 
-        # имитация набора текста
-        async with client.action(chat_id, "typing"):
-            await asyncio.sleep(min(2 + len(answer) / 25, 12) + random.uniform(0, 2))
-        bot_sending.add(chat_id)
-        try:
-            sent = await client.send_message(chat_id, answer)
-            bot_sent_ids.add(sent.id)
-        finally:
-            bot_sending.discard(chat_id)
+        for i, part in enumerate(split_parts(answer)):
+            if i:
+                await asyncio.sleep(random.uniform(1, 4))
+            async with client.action(chat_id, "typing"):
+                await asyncio.sleep(typing_seconds(part))
+            bot_sending.add(chat_id)
+            try:
+                sent = await client.send_message(chat_id, part)
+                bot_sent_ids.add(sent.id)
+            finally:
+                bot_sending.discard(chat_id)
+        last_reply[chat_id] = time.time()
         log.info("Ответил %s: %s", key, answer[:80])
         history.append({"role": "assistant", "content": answer})
         asyncio.create_task(update_memory(key, contact["goal"], history))
@@ -286,10 +333,10 @@ async def on_incoming(event):
     if takeover_until.get(event.chat_id, 0) > time.time():
         return
 
-    # человек может написать несколько сообщений подряд — ждём, пока допишет
-    if task := pending.get(event.chat_id):
-        task.cancel()
-    pending[event.chat_id] = asyncio.create_task(reply_later(event.chat_id, user, key))
+    last_incoming[event.chat_id] = time.time()
+    # ответ уже запланирован — он сам подождёт, пока человек допишет
+    if event.chat_id not in pending:
+        pending[event.chat_id] = asyncio.create_task(reply_later(event.chat_id, user, key))
 
 
 @client.on(events.NewMessage(outgoing=True, func=lambda e: e.is_private))
@@ -366,6 +413,15 @@ async def handle_command(event):
         else:
             contacts[key].pop("memory", None)
             out = f"🧹 Память о @{key} стёрта"
+    elif cmd == "/delay":
+        nums = rest.split()
+        if len(nums) == 2 and all(n.isdigit() for n in nums) and int(nums[0]) <= int(nums[1]):
+            state["delay_min"], state["delay_max"] = float(nums[0]), float(nums[1])
+            out = f"✅ Пауза перед ответом: от {nums[0]} до {nums[1]} с, иногда дольше"
+        else:
+            lo = state.get("delay_min", REPLY_DELAY_MIN)
+            hi = state.get("delay_max", REPLY_DELAY_MAX)
+            out = f"Сейчас: от {lo:.0f} до {hi:.0f} с. Поменять: /delay 20 180"
     elif cmd == "/model":
         if rest.strip():
             state["model"] = rest.strip()
