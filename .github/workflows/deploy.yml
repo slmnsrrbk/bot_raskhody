@@ -134,7 +134,8 @@ jobs:
           venv/bin/pip install -q -r requirements.txt
           cp ai_responder.service /etc/systemd/system/ai_responder.service
           systemctl daemon-reload
-          if ENV_FILE=/root/ai_responder_data/.env venv/bin/python login.py status; then
+          # работающий бот держит файл сессии, поэтому сначала смотрим на сервис
+          if systemctl is-active -q ai_responder || ENV_FILE=/root/ai_responder_data/.env venv/bin/python login.py status; then
             systemctl enable -q --now ai_responder && systemctl restart ai_responder
             sleep 8; echo "ai_responder: $(systemctl is-active ai_responder)"
           else
