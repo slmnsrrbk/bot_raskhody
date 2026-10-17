@@ -8,7 +8,11 @@ on:
         required: true
         default: install
         type: choice
-        options: [install, restart, logs, diagnose, reset-data]
+        options: [install, restart, logs, diagnose, reset-data, ai-install, ai-login, ai-code, ai-logs, ai-stop]
+      code:
+        description: "Только для ai-code: код входа из Telegram"
+        required: false
+        type: string
 
 jobs:
   deploy:
@@ -23,6 +27,13 @@ jobs:
       POLZA_API_KEY: ${{ secrets.POLZA_API_KEY }}
       PROVERKACHEKA_TOKEN: ${{ secrets.PROVERKACHEKA_TOKEN }}
       OWNER_ID: ${{ secrets.OWNER_ID }}
+      TG_API_ID: ${{ secrets.TG_API_ID }}
+      TG_API_HASH: ${{ secrets.TG_API_HASH }}
+      TG_PHONE: ${{ secrets.TG_PHONE }}
+      TG_2FA_PASSWORD: ${{ secrets.TG_2FA_PASSWORD }}
+      AI_API_KEY: ${{ secrets.AI_API_KEY || secrets.CHAD_API_KEY }}
+      LOGIN_CODE: ${{ inputs.code }}
+      AI_RUN: cd /root/bot/ai_responder && ENV_FILE=/root/ai_responder_data/.env venv/bin/python
       SSH_OPTS: -o StrictHostKeyChecking=no -o ConnectTimeout=20
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +96,67 @@ jobs:
           sshpass -e ssh $SSH_OPTS "root@$HOST" 'systemctl restart bot_raskhody bot_raskhody-web; sleep 8; echo "bot: $(systemctl is-active bot_raskhody)  web: $(systemctl is-active bot_raskhody-web)"; curl -s -o /dev/null -w "local api: %{http_code}\n" http://127.0.0.1:8080/health'
           curl -s -o /dev/null -w "https://$WEBAPP_DOMAIN/health -> %{http_code}\n" "https://$WEBAPP_DOMAIN/health" || true
 
+      - name: AI responder — install / update
+        if: env.ACTION == 'ai-install'
+        run: |
+          for v in TG_API_ID TG_API_HASH TG_PHONE AI_API_KEY; do
+            [ -n "${!v}" ] || { echo "::error::Нет секрета $v (Settings → Secrets and variables → Actions)"; exit 1; }
+          done
+          python3 - > ai.env <<'PY'
+          import os
+          env = dict(AI_PROVIDER="chadgpt", AI_MODEL="gpt-4o-mini", DATA_DIR="/root/ai_responder_data")
+          for k in ["TG_API_ID", "TG_API_HASH", "TG_PHONE", "TG_2FA_PASSWORD", "AI_API_KEY"]:
+              if os.environ.get(k):
+                  env[k] = os.environ[k]
+          for k, v in env.items():
+              print(k + '="' + v.replace("\\", "\\\\").replace('"', '\\"') + '"')
+          PY
+          sshpass -e ssh $SSH_OPTS "root@$HOST" 'mkdir -p /root/ai_responder_data && chmod 700 /root/ai_responder_data && cat > /root/ai_responder_data/.env.tmp && chmod 600 /root/ai_responder_data/.env.tmp && mv -f /root/ai_responder_data/.env.tmp /root/ai_responder_data/.env && echo ".env автоответчика записан"' < ai.env
+          rm -f ai.env
+          sshpass -e ssh $SSH_OPTS "root@$HOST" "BRANCH=${{ github.ref_name }} bash -s" <<'REMOTE'
+          set -e
+          cd /root/bot
+          git fetch -q origin "$BRANCH"
+          git checkout -q "origin/$BRANCH" -- ai_responder
+          cd ai_responder
+          [ -x venv/bin/python ] || python3 -m venv venv
+          venv/bin/pip install -q --upgrade pip
+          venv/bin/pip install -q -r requirements.txt
+          cp ai_responder.service /etc/systemd/system/ai_responder.service
+          systemctl daemon-reload
+          if ENV_FILE=/root/ai_responder_data/.env venv/bin/python login.py status; then
+            systemctl enable -q --now ai_responder && systemctl restart ai_responder
+            sleep 8; echo "ai_responder: $(systemctl is-active ai_responder)"
+          else
+            echo "==> Теперь запусти ai-login"
+          fi
+          REMOTE
+
+      - name: AI responder — send login code
+        if: env.ACTION == 'ai-login'
+        run: |
+          sshpass -e ssh $SSH_OPTS "root@$HOST" "$AI_RUN login.py start"
+
+      - name: AI responder — sign in with code
+        if: env.ACTION == 'ai-code'
+        run: |
+          CODE=$(printf '%s' "$LOGIN_CODE" | tr -cd 0-9)
+          echo "::add-mask::$CODE"
+          [ -n "$CODE" ] || { echo "::error::Укажи код в поле code"; exit 1; }
+          sshpass -e ssh $SSH_OPTS "root@$HOST" "$AI_RUN login.py code $CODE && systemctl enable -q --now ai_responder && systemctl restart ai_responder && sleep 10 && echo \"ai_responder: \$(systemctl is-active ai_responder)\""
+
+      - name: AI responder — stop
+        if: env.ACTION == 'ai-stop'
+        run: |
+          sshpass -e ssh $SSH_OPTS "root@$HOST" 'systemctl disable -q --now ai_responder; echo "ai_responder: $(systemctl is-active ai_responder)"'
+
+      - name: AI responder — logs
+        if: startsWith(env.ACTION, 'ai-')
+        run: |
+          sshpass -e ssh $SSH_OPTS "root@$HOST" 'journalctl -u ai_responder -n 40 --no-pager || true'
+
       - name: Show logs
+        if: ${{ !startsWith(env.ACTION, 'ai-') }}
         run: |
           sshpass -e ssh $SSH_OPTS "root@$HOST" 'journalctl -u bot_raskhody -n 25 --no-pager; echo "===== web ====="; journalctl -u bot_raskhody-web -n 25 --no-pager' \
             | sed -E 's#[0-9]{8,}:[A-Za-z0-9_-]{30,}#<TOKEN>#g'

@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram AI auto-responder (personal account)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/bot/ai_responder
+Environment=ENV_FILE=/root/ai_responder_data/.env
+ExecStart=/root/bot/ai_responder/venv/bin/python /root/bot/ai_responder/responder.py
+Restart=always
+RestartSec=10
+# Логи: journalctl -u ai_responder -f
+
+[Install]
+WantedBy=multi-user.target
