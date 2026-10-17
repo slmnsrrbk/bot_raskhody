@@ -4,6 +4,8 @@
 Отвечает только тем, кого ты добавил в список, учитывая цель для каждого человека.
 Управление — командами в «Избранном» (Saved Messages), см. /help.
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging

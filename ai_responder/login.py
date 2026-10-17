@@ -2,6 +2,7 @@
 Вход в аккаунт без терминала, в два запуска:
   python login.py start        — Telegram присылает код
   python login.py code 12345   — вход по этому коду
+  python login.py status       — проверить, выполнен ли вход
 Номер берётся из TG_PHONE, облачный пароль (если включён) — из TG_2FA_PASSWORD.
 """
 import asyncio
@@ -30,6 +31,9 @@ async def main(mode: str, code: str = ""):
             me = await client.get_me()
             print(f"Уже вошли как @{me.username or me.id}")
             return
+        if mode == "status":
+            print("Ещё не вошли в аккаунт")
+            sys.exit(2)
 
         if mode == "start":
             sent = await client.send_code_request(PHONE)
