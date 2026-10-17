@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.tl.types import User
 
-load_dotenv()
+load_dotenv(os.getenv("ENV_FILE", ".env"))
 
 API_ID = int(os.environ["TG_API_ID"])
 API_HASH = os.environ["TG_API_HASH"]
@@ -29,7 +29,7 @@ DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "8"))
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "30"))
 TAKEOVER_MINUTES = float(os.getenv("TAKEOVER_MINUTES", "60"))
 
-DATA_DIR = "data"
+DATA_DIR = os.getenv("DATA_DIR", "data")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 HANDOFF = "[[HANDOFF]]"
 
@@ -326,7 +326,10 @@ async def handle_command(event):
 
 async def main():
     global me
-    await client.start()  # при первом запуске спросит телефон и код
+    await client.connect()
+    if not await client.is_user_authorized():
+        # на сервере без терминала вход делается через login.py
+        await client.start()
     me = await client.get_me()
     log.info("Вошёл как @%s. Команды — в Избранном, начни с /help", me.username)
     await client.run_until_disconnected()
