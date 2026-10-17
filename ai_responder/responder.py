@@ -51,6 +51,8 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /pause @username [минуты] — заглушить для одного человека
 /resume @username — снова отвечать ему
 /list — кому бот отвечает
+/memory @username — что бот помнит о человеке
+/forget @username — стереть эту память
 /persona текст — общая инструкция: кто ты, чем занимаешься, тон
 /model — какая нейросеть отвечает; /model название — сменить её
 /on, /off — включить или выключить бота целиком
@@ -101,11 +103,13 @@ def contact_for(user: User):
 
 # ---------- нейросеть ----------
 
-def build_system_prompt(goal: str, name: str) -> str:
+def build_system_prompt(goal: str, name: str, memory: str = "") -> str:
+    notes = f"Что ты уже знаешь об этом собеседнике из прошлых разговоров:\n{memory}\n\n" if memory else ""
     return (
         f"{state['persona']}\n\n"
         f"Собеседник: {name}.\n"
         f"Твоя цель в этом диалоге: {goal}\n\n"
+        f"{notes}"
         "Правила:\n"
         "- Веди разговор к цели мягко, не дави и не повторяйся.\n"
         "- Не выдумывай факты, цены, сроки и обещания, которых нет в инструкции.\n"
@@ -114,6 +118,37 @@ def build_system_prompt(goal: str, name: str) -> str:
         f"ответь ровно {HANDOFF} и ничего больше.\n"
         "- Отвечай только текстом следующего сообщения, без пометок вроде «Я:»."
     )
+
+
+MEMORY_PROMPT = (
+    "Ты ведёшь заметки о собеседнике владельца Telegram-аккаунта, чтобы помнить "
+    "контекст между разговорами. Обнови заметки по свежей переписке: кто этот человек, "
+    "что ему нужно, что уже обсудили, о чём договорились (даты, суммы, обещания), "
+    "на каком этапе цель и что важно не забыть. Пиши кратко, пунктами, не больше 15 пунктов. "
+    "Старые факты сохраняй, если переписка их не опровергает. Выведи только заметки."
+)
+
+
+async def update_memory(key: str, goal: str, history: list[dict]):
+    contact = state["contacts"].get(key)
+    if not contact:
+        return
+    transcript = "\n".join(
+        f"{'Владелец' if m['role'] == 'assistant' else 'Собеседник'}: {m['content']}" for m in history
+    )
+    request = (
+        f"Цель владельца в диалоге: {goal}\n\n"
+        f"Прежние заметки:\n{contact.get('memory') or '(пока пусто)'}\n\n"
+        f"Свежая переписка:\n{transcript}"
+    )
+    try:
+        notes = await ask_ai(MEMORY_PROMPT, [{"role": "user", "content": request}])
+    except Exception:
+        log.exception("Не удалось обновить память %s", key)
+        return
+    if key in state["contacts"]:
+        state["contacts"][key]["memory"] = notes.strip()
+        save_state()
 
 
 async def ask_ai(system: str, history: list[dict]) -> str:
@@ -203,7 +238,8 @@ async def reply_later(chat_id: int, user: User, key: str):
             return  # последнее слово уже за нами
 
         name = " ".join(filter(None, [user.first_name, user.last_name])) or key
-        answer = await ask_ai(build_system_prompt(contact["goal"], name), history)
+        system = build_system_prompt(contact["goal"], name, contact.get("memory", ""))
+        answer = await ask_ai(system, history)
         await client.send_read_acknowledge(chat_id)
 
         if HANDOFF in answer:
@@ -224,6 +260,8 @@ async def reply_later(chat_id: int, user: User, key: str):
         finally:
             bot_sending.discard(chat_id)
         log.info("Ответил %s: %s", key, answer[:80])
+        history.append({"role": "assistant", "content": answer})
+        asyncio.create_task(update_memory(key, contact["goal"], history))
     except asyncio.CancelledError:
         pass
     except Exception:
@@ -317,6 +355,17 @@ async def handle_command(event):
             out = "✅ Инструкция обновлена"
         else:
             out = f"Текущая инструкция:\n{state['persona']}"
+    elif cmd == "/memory":
+        if key not in contacts:
+            out = "Такого нет в списке"
+        else:
+            out = f"🧠 @{key}:\n{contacts[key].get('memory') or 'пока ничего не запомнил'}"
+    elif cmd == "/forget":
+        if key not in contacts:
+            out = "Такого нет в списке"
+        else:
+            contacts[key].pop("memory", None)
+            out = f"🧹 Память о @{key} стёрта"
     elif cmd == "/model":
         if rest.strip():
             state["model"] = rest.strip()
