@@ -62,6 +62,9 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /forget @username — стереть эту память
 /persona текст — общая инструкция: кто ты, чем занимаешься, тон
 /delay 20 180 — пауза перед ответом, от и до, в секундах
+/style текст — как ты пишешь (коротко, с маленькой буквы, без точек…)
+/example текст — добавить пример твоего сообщения, можно несколько строк сразу
+/examples — показать примеры; /examples clear — удалить их
 /model — какая нейросеть отвечает; /model название — сменить её
 /on, /off — включить или выключить бота целиком
 Вместо @username можно указать числовой ID."""
@@ -111,10 +114,32 @@ def contact_for(user: User):
 
 # ---------- нейросеть ----------
 
+EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]+")
+
+
+def strip_smileys(text: str) -> str:
+    """Убирает скобки-смайлики «)))» и эмодзи, но не настоящие скобки."""
+    text = EMOJI.sub("", text)
+    if text.count(")") > text.count("("):
+        text = re.sub(r"\s*(?:[:;]-?)?[)(]+(?=\s|$|[.,!?])", "", text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
+def style_block() -> str:
+    out = ""
+    if state.get("style"):
+        out += f"Как пишет владелец (пиши именно так, это главное):\n{state['style']}\n\n"
+    if state.get("style_examples"):
+        out += "Примеры его настоящих сообщений:\n" + "\n".join(
+            f"— {e}" for e in state["style_examples"][-40:]) + "\n\n"
+    return out
+
+
 def build_system_prompt(goal: str, name: str, memory: str = "") -> str:
     notes = f"Что ты уже знаешь об этом собеседнике из прошлых разговоров:\n{memory}\n\n" if memory else ""
     return (
         f"{state['persona']}\n\n"
+        f"{style_block()}"
         f"Собеседник: {name}.\n"
         f"Твоя цель в этом диалоге: {goal}\n\n"
         f"{notes}"
@@ -125,6 +150,10 @@ def build_system_prompt(goal: str, name: str, memory: str = "") -> str:
         f"- Если вопрос требует решения владельца или ты не знаешь ответа, "
         f"ответь ровно {HANDOFF} и ничего больше.\n"
         "- Отвечай только текстом следующего сообщения, без пометок вроде «Я:».\n"
+        "- Сообщения владельца в этой переписке — образец его манеры: длина, "
+        "заглавные буквы, знаки препинания, словечки. Пиши так же.\n"
+        "- Никаких скобок-смайликов «)» «))» и эмодзи.\n"
+        "- Не звучи как ассистент: без «Конечно!», «Отличный вопрос», «Буду рад помочь».\n"
         "- Как живой человек в мессенджере, можешь разбить ответ на 2–3 коротких "
         "сообщения, разделив их пустой строкой. Не делай так каждый раз."
     )
@@ -284,7 +313,9 @@ async def reply_later(chat_id: int, user: User, key: str):
         system = build_system_prompt(contact["goal"], name, contact.get("memory", ""))
         await client.send_read_acknowledge(chat_id)
         await asyncio.sleep(random.uniform(2, 8))  # прочитал, думает
-        answer = await ask_ai(system, history)
+        answer = strip_smileys(await ask_ai(system, history))
+        if not answer:
+            return
 
         if HANDOFF in answer:
             await client.send_message(
@@ -356,7 +387,7 @@ async def handle_command(event):
     text = (event.raw_text or "").strip()
     if not text.startswith("/"):
         return
-    cmd, _, rest = text.partition(" ")
+    cmd, rest = (re.split(r"\s", text, maxsplit=1) + [""])[:2]
     cmd = cmd.lower()
     arg, _, tail = rest.strip().partition(" ")
     key = norm_key(arg) if arg else ""
@@ -422,6 +453,27 @@ async def handle_command(event):
             lo = state.get("delay_min", REPLY_DELAY_MIN)
             hi = state.get("delay_max", REPLY_DELAY_MAX)
             out = f"Сейчас: от {lo:.0f} до {hi:.0f} с. Поменять: /delay 20 180"
+    elif cmd == "/style":
+        if rest.strip():
+            state["style"] = rest.strip()
+            out = "✅ Стиль запомнил"
+        else:
+            out = f"Твой стиль:\n{state.get('style') or 'не задан'}\n\nЗадать: /style текст"
+    elif cmd == "/example":
+        lines = [l.strip() for l in rest.splitlines() if l.strip()]
+        if not lines:
+            out = "Формат: /example твоё сообщение (можно несколько строк)"
+        else:
+            state.setdefault("style_examples", []).extend(lines)
+            state["style_examples"] = state["style_examples"][-80:]
+            out = f"✅ Добавил {len(lines)}, всего примеров: {len(state['style_examples'])}"
+    elif cmd == "/examples":
+        if rest.strip().lower() == "clear":
+            state["style_examples"] = []
+            out = "🧹 Примеры удалены"
+        else:
+            ex = state.get("style_examples", [])
+            out = "\n".join(f"— {e}" for e in ex[-40:]) or "Примеров пока нет. Добавь: /example текст"
     elif cmd == "/model":
         if rest.strip():
             state["model"] = rest.strip()
