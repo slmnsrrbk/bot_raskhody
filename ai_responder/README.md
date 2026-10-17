@@ -13,21 +13,21 @@
 - Если вопрос требует твоего решения, бот не отвечает, а присылает тебе уведомление в Избранное.
 - Если прямо спросят «ты бот?», честно отвечает, что это ИИ-ассистент.
 
-## Установка с телефона, без компьютера
+## Установка с телефона, без компьютера
 
-1. Получи `api_id` и `api_hash` на https://my.telegram.org в разделе «API development tools».
-2. На GitHub открой репозиторий → Settings → Secrets and variables → Actions → New repository secret и добавь:
+1. Получи `api_id` и `api_hash` на https://my.telegram.org в разделе «API development tools».
+2. На GitHub открой репозиторий → Settings → Secrets and variables → Actions → New repository secret и добавь:
    - `TG_API_ID`, `TG_API_HASH`
-   - `TG_PHONE` — твой номер в формате `+79991234567`
-   - `TG_2FA_PASSWORD` — облачный пароль Telegram, если он включён
-   - ключ ChadGPT берётся из уже существующего секрета `CHAD_API_KEY`
-3. Actions → Deploy to VPS → Run workflow, ветка `claude/bot-deployment-t9a0e5`, по очереди:
-   - `ai-install` ставит автоответчик на сервер
-   - `ai-login` присылает код в Telegram
-   - `ai-code` с кодом в поле `code` выполняет вход и запускает бота
+   - `TG_PHONE` — твой номер в формате `+79991234567`
+   - `TG_2FA_PASSWORD` — облачный пароль Telegram, если он включён
+   - ключ ChadGPT берётся из уже существующего секрета `CHAD_API_KEY`
+3. Actions → Deploy to VPS → Run workflow, ветка `claude/bot-deployment-t9a0e5`, по очереди:
+   - `ai-install` ставит автоответчик на сервер
+   - `ai-login` присылает код в Telegram
+   - `ai-code` с кодом в поле `code` выполняет вход и запускает бота
 4. Потом `ai-logs` показывает логи, а `ai-stop` выключает бота.
 
-Код из Telegram никому не пересылай внутри Telegram: если его переслать, Telegram заблокирует вход.
+Код из Telegram никому не пересылай внутри Telegram: если его переслать, Telegram заблокирует вход.
 
 ## Установка на компьютере
 
