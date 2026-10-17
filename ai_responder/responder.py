@@ -28,13 +28,21 @@ AI_API_KEY = os.environ["AI_API_KEY"]
 AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "8"))
-# пауза перед ответом, секунды: обычно от MIN до MAX, иногда «отвлёкся» до LONG_PAUSE_MAX
-REPLY_DELAY_MIN = float(os.getenv("REPLY_DELAY_MIN", "20"))
-REPLY_DELAY_MAX = float(os.getenv("REPLY_DELAY_MAX", "180"))
-LONG_PAUSE_CHANCE = float(os.getenv("LONG_PAUSE_CHANCE", "0.15"))
-LONG_PAUSE_MAX = float(os.getenv("LONG_PAUSE_MAX", "600"))
-# если переписка живая (отвечали недавно), отвечаем быстрее
-ACTIVE_CHAT_SECONDS = 300
+# всё, что меняется командой /set: ключ -> (по умолчанию, описание)
+SETTINGS = {
+    "pause_min": (20, "пауза перед ответом, от, сек"),
+    "pause_max": (180, "пауза перед ответом, до, сек"),
+    "fast_min": (5, "в живой переписке пауза от, сек"),
+    "fast_max": (30, "в живой переписке пауза до, сек"),
+    "active_min": (5, "сколько минут после ответа переписка считается живой"),
+    "long_chance": (0, "как часто ответить позже обычного, % (0 = никогда)"),
+    "long_max": (600, "такая поздняя пауза до, сек"),
+    "typing_speed": (5, "скорость набора, символов в секунду"),
+}
+
+
+def setting(key: str) -> float:
+    return float(state.get("settings", {}).get(key, SETTINGS[key][0]))
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "30"))
 TAKEOVER_MINUTES = float(os.getenv("TAKEOVER_MINUTES", "60"))
 
@@ -62,6 +70,8 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /forget @username — стереть эту память
 /persona текст — общая инструкция: кто ты, чем занимаешься, тон
 /delay 20 180 — пауза перед ответом, от и до, в секундах
+/settings — все паузы и их значения
+/set ключ число — поменять, например /set fast_max 60
 /style текст — как ты пишешь (коротко, с маленькой буквы, без точек…)
 /example текст — добавить пример твоего сообщения, можно несколько строк сразу
 /examples — показать примеры; /examples clear — удалить их
@@ -239,21 +249,19 @@ last_reply: dict[int, float] = {}       # chat_id -> когда бот отве�
 
 
 def human_delay(chat_id: int) -> float:
-    """Сколько «не замечать» сообщение: каждый раз по-разному, как у живого человека."""
-    lo = state.get("delay_min", REPLY_DELAY_MIN)
-    hi = state.get("delay_max", REPLY_DELAY_MAX)
-    if time.time() - last_reply.get(chat_id, 0) < ACTIVE_CHAT_SECONDS:
-        # уже переписываемся — отвечаем быстрее, но тоже не мгновенно
-        return random.uniform(5, max(10, lo * 1.5))
-    if random.random() < LONG_PAUSE_CHANCE:
-        return random.uniform(hi, max(hi, LONG_PAUSE_MAX))
-    # короткие паузы чаще длинных
-    return lo + (hi - lo) * random.random() ** 2
+    """Случайная пауза строго в заданном диапазоне, каждый раз новая."""
+    if time.time() - last_reply.get(chat_id, 0) < setting("active_min") * 60:
+        lo, hi = setting("fast_min"), setting("fast_max")
+    elif random.random() * 100 < setting("long_chance"):
+        lo, hi = setting("pause_max"), setting("long_max")
+    else:
+        lo, hi = setting("pause_min"), setting("pause_max")
+    return random.uniform(min(lo, hi), max(lo, hi))
 
 
 def typing_seconds(text: str) -> float:
-    # на телефоне люди набирают примерно 4–7 символов в секунду
-    return max(2.0, min(len(text) / random.uniform(4, 7), 45))
+    speed = max(1.0, setting("typing_speed")) * random.uniform(0.75, 1.3)
+    return max(2.0, min(len(text) / speed, 45))
 
 
 def split_parts(answer: str) -> list[str]:
@@ -389,6 +397,7 @@ async def handle_command(event):
         return
     cmd, rest = (re.split(r"\s", text, maxsplit=1) + [""])[:2]
     cmd = cmd.lower()
+    log.info("Команда: %s", cmd)
     arg, _, tail = rest.strip().partition(" ")
     key = norm_key(arg) if arg else ""
     contacts = state["contacts"]
@@ -447,12 +456,24 @@ async def handle_command(event):
     elif cmd == "/delay":
         nums = rest.split()
         if len(nums) == 2 and all(n.isdigit() for n in nums) and int(nums[0]) <= int(nums[1]):
-            state["delay_min"], state["delay_max"] = float(nums[0]), float(nums[1])
-            out = f"✅ Пауза перед ответом: от {nums[0]} до {nums[1]} с, иногда дольше"
+            state.setdefault("settings", {}).update(pause_min=float(nums[0]), pause_max=float(nums[1]))
+            out = f"✅ Пауза перед ответом: случайно от {nums[0]} до {nums[1]} с"
         else:
-            lo = state.get("delay_min", REPLY_DELAY_MIN)
-            hi = state.get("delay_max", REPLY_DELAY_MAX)
+            lo, hi = setting("pause_min"), setting("pause_max")
             out = f"Сейчас: от {lo:.0f} до {hi:.0f} с. Поменять: /delay 20 180"
+    elif cmd == "/settings":
+        out = "Настройки (поменять: /set ключ число):\n\n" + "\n".join(
+            f"{k} = {setting(k):g}: {desc}" for k, (_, desc) in SETTINGS.items())
+    elif cmd == "/set":
+        try:
+            value = float(tail.replace(",", "."))
+        except ValueError:
+            value = None
+        if key not in SETTINGS or value is None or value < 0:
+            out = "Формат: /set ключ число. Ключи смотри в /settings"
+        else:
+            state.setdefault("settings", {})[key] = value
+            out = f"✅ {key} = {value:g}: {SETTINGS[key][1]}"
     elif cmd == "/style":
         if rest.strip():
             state["style"] = rest.strip()
@@ -491,6 +512,22 @@ async def handle_command(event):
     await event.reply(nbsp(out))
 
 
+async def catch_up():
+    """После перезапуска отвечаем тем, чьи сообщения остались без ответа."""
+    if not state["enabled"]:
+        return
+    async for dialog in client.iter_dialogs(limit=100):
+        user = dialog.entity
+        if not isinstance(user, User) or user.bot or not dialog.unread_count:
+            continue
+        key, contact = contact_for(user)
+        if not contact or contact.get("paused_until", 0) > time.time():
+            continue
+        if dialog.message and not dialog.message.out and dialog.id not in pending:
+            log.info("Непрочитанное от %s, отвечу", key)
+            pending[dialog.id] = asyncio.create_task(reply_later(dialog.id, user, key))
+
+
 async def main():
     global me
     await client.connect()
@@ -499,6 +536,7 @@ async def main():
         await client.start()
     me = await client.get_me()
     log.info("Вошёл как @%s. Команды — в Избранном, начни с /help", me.username)
+    await catch_up()
     await client.run_until_disconnected()
 
 
