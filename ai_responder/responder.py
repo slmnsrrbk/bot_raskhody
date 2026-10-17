@@ -39,6 +39,11 @@ SETTINGS = {
     "long_max": (600, "такая поздняя пауза до, сек"),
     "typing_speed": (5, "скорость набора, символов в секунду"),
     "quiet_min": (0, "сколько минут молчать в чате, если ты написал сам (0 = не молчать)"),
+    "nudge_after_min": (180, "через сколько минут тишины предложить вопрос (0 = выключено)"),
+    "nudge_max": (1, "сколько раз подряд можно напомнить о себе без ответа"),
+    "nudge_from": (10, "предлагать вопросы не раньше этого часа"),
+    "nudge_to": (22, "и не позже этого часа"),
+    "tz": (7, "твой часовой пояс, UTC+"),
 }
 
 
@@ -67,6 +72,8 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /resume @username — снова отвечать ему
 /list — кому бот отвечает
 /reply @username — ответить этому человеку прямо сейчас
+/nudge @username — предложить вопрос этому человеку прямо сейчас
+/ok номер, /no номер — согласовать предложенный вопрос (или ответь на него «да» / «нет» / своим текстом)
 /memory @username — что бот помнит о человеке
 /forget @username — стереть эту память
 /persona текст — общая инструкция: кто ты, чем занимаешься, тон
@@ -305,6 +312,116 @@ async def load_history(chat_id: int) -> list[dict]:
     return history
 
 
+async def send_text(chat_id: int, text: str):
+    """Отправляет от твоего имени: «печатает…», затем сообщение (или 2–3 подряд)."""
+    for i, part in enumerate(split_parts(text)):
+        if i:
+            await asyncio.sleep(random.uniform(1, 4))
+        async with client.action(chat_id, "typing"):
+            await asyncio.sleep(typing_seconds(part))
+        bot_sending.add(chat_id)
+        try:
+            sent = await client.send_message(chat_id, part)
+            bot_sent_ids.add(sent.id)
+        finally:
+            bot_sending.discard(chat_id)
+    last_reply[chat_id] = time.time()
+
+
+NUDGE_PROMPT = (
+    "Разговор затих: собеседник давно не отвечает. Напиши одно короткое сообщение, "
+    "которое естественно продолжит разговор: уточняющий вопрос по теме последних сообщений "
+    "или лёгкий вопрос, который приближает к цели. Не упрекай за молчание, не пиши "
+    "«ты пропал(а)?», не повторяй вопросы, которые уже задавал. Выведи только текст сообщения."
+)
+YES = {"да", "+", "ок", "ok", "давай", "го", "отправь", "отправляй", "yes", "ага"}
+NO = {"нет", "-", "не", "не надо", "no", "неа", "отмена"}
+
+
+def local_hour() -> int:
+    return int((time.gmtime().tm_hour + setting("tz")) % 24)
+
+
+async def propose_nudge(key: str, contact: dict, force: bool = False) -> str | None:
+    """Готовит вопрос для затихшего разговора и присылает его тебе на согласование."""
+    cid = contact.get("id")
+    msgs = await client.get_messages(cid, limit=1)
+    if not msgs:
+        return "С этим человеком ещё нет переписки"
+    last = msgs[0]
+    if not last.out and not force:
+        return None  # ждём не мы, а нас — это обычный ответ
+    history = await load_history(cid)
+    silence = (time.time() - last.date.timestamp()) / 3600
+    history.append({"role": "user", "content": f"[служебно: собеседник молчит {silence:.0f} ч. Напиши сообщение-продолжение]"})
+    system = build_system_prompt(contact["goal"], key, contact.get("memory", "")) + "\n\n" + NUDGE_PROMPT
+    text = strip_smileys(await ask_ai(system, history))
+    if not text or HANDOFF in text:
+        return "Не придумал, что написать: тут лучше решить тебе"
+    contact["nudged_msg"] = last.id
+    state["nudge_seq"] = state.get("nudge_seq", 0) + 1
+    nid = str(state["nudge_seq"])
+    head = nbsp(f"💬 №{nid}. @{key} молчит {silence:.0f} ч. Предлагаю написать:")
+    tail = nbsp(f"Ответь на это сообщение: «да» отправлю, «нет» не надо, или пришли свой вариант. "
+                f"Ещё можно /ok {nid} или /no {nid}")
+    sent = await client.send_message("me", f"{head}\n\n{text}\n\n{tail}")
+    state.setdefault("nudges", {})[nid] = dict(
+        key=key, chat_id=cid, text=text, msg_id=sent.id, last_id=last.id, status="wait", created=time.time())
+    save_state()
+    log.info("Предложил вопрос №%s для %s", nid, key)
+    return None
+
+
+async def resolve_nudge(nid: str, approve: bool, custom: str = "") -> str:
+    n = state.get("nudges", {}).get(nid)
+    if not n or n["status"] != "wait":
+        return "Это предложение уже неактуально"
+    msgs = await client.get_messages(n["chat_id"], limit=1)
+    if msgs and msgs[0].id != n["last_id"]:
+        n["status"] = "stale"
+        return f"Не отправляю: в чате с @{n['key']} уже появились новые сообщения"
+    if not approve:
+        n["status"] = "no"
+        return "Ок, не пишу"
+    text = custom.strip() or n["text"]
+    await send_text(n["chat_id"], text)
+    n["status"] = "sent"
+    contact = state["contacts"].get(n["key"])
+    if contact:
+        contact["nudges_in_row"] = contact.get("nudges_in_row", 0) + 1
+    log.info("Отправил согласованный вопрос №%s для %s", nid, n["key"])
+    return f"✅ Отправил @{n['key']}"
+
+
+async def check_nudges():
+    if not state["enabled"] or setting("nudge_after_min") <= 0:
+        return
+    if not setting("nudge_from") <= local_hour() < setting("nudge_to"):
+        return
+    waiting = {n["chat_id"] for n in state.get("nudges", {}).values() if n["status"] == "wait"}
+    for key, c in list(state["contacts"].items()):
+        cid = c.get("id")
+        if not cid or cid in pending or cid in waiting or c.get("paused_until", 0) > time.time():
+            continue
+        if c.get("nudges_in_row", 0) >= setting("nudge_max"):
+            continue
+        msgs = await client.get_messages(cid, limit=1)
+        if not msgs or not msgs[0].out or c.get("nudged_msg") == msgs[0].id:
+            continue
+        if time.time() - msgs[0].date.timestamp() < setting("nudge_after_min") * 60:
+            continue
+        await propose_nudge(key, c)
+
+
+async def nudge_loop():
+    while True:
+        await asyncio.sleep(300)
+        try:
+            await check_nudges()
+        except Exception:
+            log.exception("Не удалось проверить затихшие разговоры")
+
+
 async def reply_later(chat_id: int, user: User, key: str, now: bool = False):
     try:
         delay = random.uniform(2, 6) if now else human_delay(chat_id)
@@ -338,18 +455,7 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False):
             )
             return
 
-        for i, part in enumerate(split_parts(answer)):
-            if i:
-                await asyncio.sleep(random.uniform(1, 4))
-            async with client.action(chat_id, "typing"):
-                await asyncio.sleep(typing_seconds(part))
-            bot_sending.add(chat_id)
-            try:
-                sent = await client.send_message(chat_id, part)
-                bot_sent_ids.add(sent.id)
-            finally:
-                bot_sending.discard(chat_id)
-        last_reply[chat_id] = time.time()
+        await send_text(chat_id, answer)
         log.info("Ответил %s: %s", key, answer[:80])
         history.append({"role": "assistant", "content": answer})
         asyncio.create_task(update_memory(key, contact["goal"], history))
@@ -380,6 +486,8 @@ async def on_incoming(event):
         return
 
     last_incoming[event.chat_id] = time.time()
+    if contact.pop("nudges_in_row", None):
+        save_state()
     # ответ уже запланирован — он сам подождёт, пока человек допишет
     if event.chat_id not in pending:
         pending[event.chat_id] = asyncio.create_task(reply_later(event.chat_id, user, key))
@@ -401,6 +509,19 @@ async def on_outgoing(event):
 
 async def handle_command(event):
     text = (event.raw_text or "").strip()
+    if event.is_reply and text and not text.startswith("/"):
+        nid = next((k for k, n in state.get("nudges", {}).items() if n["msg_id"] == event.reply_to_msg_id), None)
+        if nid:
+            word = text.lower().strip(" .!")
+            if word in YES:
+                out = await resolve_nudge(nid, True)
+            elif word in NO:
+                out = await resolve_nudge(nid, False)
+            else:
+                out = await resolve_nudge(nid, True, custom=text)
+            save_state()
+            await event.reply(nbsp(out))
+        return
     if not text.startswith("/"):
         return
     cmd, rest = (re.split(r"\s", text, maxsplit=1) + [""])[:2]
@@ -440,6 +561,15 @@ async def handle_command(event):
                 out = f"✍️ Отвечаю @{key}"
             except Exception:
                 out = f"⚠️ Не нашёл @{key} в Telegram"
+    elif cmd in ("/ok", "/no"):
+        out = await resolve_nudge(arg, cmd == "/ok") if arg else f"Формат: {cmd} номер"
+    elif cmd == "/nudge":
+        if key not in contacts or not contacts[key].get("id"):
+            out = f"Сначала добавь: /add @{key or 'username'} цель"
+        else:
+            out = await propose_nudge(key, contacts[key], force=True)
+            if out is None:
+                return
     elif cmd == "/del":
         out = f"🗑 @{key} удалён" if contacts.pop(key, None) else "Такого нет в списке"
     elif cmd == "/pause":
@@ -580,6 +710,7 @@ async def main():
     me = await client.get_me()
     log.info("Вошёл как @%s. Команды — в Избранном, начни с /help", me.username)
     await catch_up()
+    asyncio.create_task(nudge_loop())
     await client.run_until_disconnected()
 
 
