@@ -2,3 +2,4 @@
 *.session
 *.session-journal
 data/
+__pycache__/
