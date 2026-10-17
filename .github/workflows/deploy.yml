@@ -31,7 +31,7 @@ jobs:
       TG_API_HASH: ${{ secrets.TG_API_HASH }}
       TG_PHONE: ${{ secrets.TG_PHONE }}
       TG_2FA_PASSWORD: ${{ secrets.TG_2FA_PASSWORD }}
-      AI_API_KEY: ${{ secrets.AI_API_KEY || secrets.CHAD_API_KEY }}
+      AI_API_KEY: ${{ secrets.AI_API_KEY }}
       LOGIN_CODE: ${{ inputs.code }}
       AI_RUN: cd /root/bot/ai_responder && ENV_FILE=/root/ai_responder_data/.env venv/bin/python
       SSH_OPTS: -o StrictHostKeyChecking=no -o ConnectTimeout=20
@@ -99,13 +99,22 @@ jobs:
       - name: AI responder — install / update
         if: env.ACTION == 'ai-install'
         run: |
-          for v in TG_API_ID TG_API_HASH TG_PHONE AI_API_KEY; do
+          for v in TG_API_ID TG_API_HASH TG_PHONE; do
             [ -n "${!v}" ] || { echo "::error::Нет секрета $v (Settings → Secrets and variables → Actions)"; exit 1; }
           done
+          [ -n "$AI_API_KEY$POLZA_API_KEY$CHAD_API_KEY" ] || { echo "::error::Нужен ключ нейросети: POLZA_API_KEY, CHAD_API_KEY или AI_API_KEY"; exit 1; }
           python3 - > ai.env <<'PY'
           import os
-          env = dict(AI_PROVIDER="chadgpt", AI_MODEL="gpt-4o-mini", DATA_DIR="/root/ai_responder_data")
-          for k in ["TG_API_ID", "TG_API_HASH", "TG_PHONE", "TG_2FA_PASSWORD", "AI_API_KEY"]:
+          e = os.environ
+          env = dict(DATA_DIR="/root/ai_responder_data")
+          # нейросеть: свой AI_API_KEY → Polza (как у бота расходов) → ChadGPT
+          if e.get("AI_API_KEY") or not e.get("POLZA_API_KEY"):
+              env.update(AI_PROVIDER="chadgpt", AI_MODEL="gpt-4o-mini",
+                         AI_API_KEY=e.get("AI_API_KEY") or e.get("CHAD_API_KEY", ""))
+          else:
+              env.update(AI_PROVIDER="openai", AI_BASE_URL="https://api.polza.ai/api/v1",
+                         AI_MODEL="openai/gpt-4.1-mini", AI_API_KEY=e["POLZA_API_KEY"])
+          for k in ["TG_API_ID", "TG_API_HASH", "TG_PHONE", "TG_2FA_PASSWORD"]:
               if os.environ.get(k):
                   env[k] = os.environ[k]
           for k, v in env.items():
