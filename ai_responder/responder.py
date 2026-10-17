@@ -38,13 +38,13 @@ SETTINGS = {
     "long_chance": (0, "как часто ответить позже обычного, % (0 = никогда)"),
     "long_max": (600, "такая поздняя пауза до, сек"),
     "typing_speed": (5, "скорость набора, символов в секунду"),
+    "quiet_min": (0, "сколько минут молчать в чате, если ты написал сам (0 = не молчать)"),
 }
 
 
 def setting(key: str) -> float:
     return float(state.get("settings", {}).get(key, SETTINGS[key][0]))
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "30"))
-TAKEOVER_MINUTES = float(os.getenv("TAKEOVER_MINUTES", "60"))
 
 DATA_DIR = os.getenv("DATA_DIR", "data")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
@@ -66,6 +66,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /pause @username [минуты] — заглушить для одного человека
 /resume @username — снова отвечать ему
 /list — кому бот отвечает
+/reply @username — ответить этому человеку прямо сейчас
 /memory @username — что бот помнит о человеке
 /forget @username — стереть эту память
 /persona текст — общая инструкция: кто ты, чем занимаешься, тон
@@ -304,9 +305,9 @@ async def load_history(chat_id: int) -> list[dict]:
     return history
 
 
-async def reply_later(chat_id: int, user: User, key: str):
+async def reply_later(chat_id: int, user: User, key: str, now: bool = False):
     try:
-        delay = human_delay(chat_id)
+        delay = random.uniform(2, 6) if now else human_delay(chat_id)
         log.info("Отвечу %s примерно через %d с", key, delay)
         await asyncio.sleep(delay)
         # если человек ещё пишет, даём ему договорить
@@ -318,7 +319,7 @@ async def reply_later(chat_id: int, user: User, key: str):
             return
 
         history = await load_history(chat_id)
-        if not history or history[-1]["role"] != "user":
+        if not history or (history[-1]["role"] != "user" and not now):
             return  # последнее слово уже за нами
 
         name = " ".join(filter(None, [user.first_name, user.last_name])) or key
@@ -391,8 +392,9 @@ async def on_outgoing(event):
         return
     if event.id in bot_sent_ids or event.chat_id in bot_sending:
         return
-    # ты написал сам — бот не мешает
-    takeover_until[event.chat_id] = time.time() + TAKEOVER_MINUTES * 60
+    # ты написал сам — бот не перебивает
+    if setting("quiet_min") > 0:
+        takeover_until[event.chat_id] = time.time() + setting("quiet_min") * 60
     if task := pending.pop(event.chat_id, None):
         task.cancel()
 
@@ -425,6 +427,19 @@ async def handle_command(event):
             except Exception:
                 out = (f"⚠️ Добавил @{key}, но в Telegram такого не нашёл. "
                        "Нужен именно @username из профиля человека, не имя. Если ошибся, /del и добавь заново")
+    elif cmd == "/reply":
+        if key not in contacts:
+            out = f"Сначала добавь: /add @{key or 'username'} цель"
+        else:
+            try:
+                ent = await client.get_entity(contacts[key].get("id") or (int(key) if key.isdigit() else key))
+                takeover_until.pop(ent.id, None)
+                if task := pending.pop(ent.id, None):
+                    task.cancel()
+                pending[ent.id] = asyncio.create_task(reply_later(ent.id, ent, key, now=True))
+                out = f"✍️ Отвечаю @{key}"
+            except Exception:
+                out = f"⚠️ Не нашёл @{key} в Telegram"
     elif cmd == "/del":
         out = f"🗑 @{key} удалён" if contacts.pop(key, None) else "Такого нет в списке"
     elif cmd == "/pause":
@@ -546,13 +561,13 @@ async def catch_up():
         return
     async for dialog in client.iter_dialogs(limit=100):
         user = dialog.entity
-        if not isinstance(user, User) or user.bot or not dialog.unread_count:
+        if not isinstance(user, User) or user.bot or user.is_self:
             continue
         key, contact = contact_for(user)
         if not contact or contact.get("paused_until", 0) > time.time():
             continue
         if dialog.message and not dialog.message.out and dialog.id not in pending:
-            log.info("Непрочитанное от %s, отвечу", key)
+            log.info("%s ждёт ответа, отвечу", key)
             pending[dialog.id] = asyncio.create_task(reply_later(dialog.id, user, key))
 
 
