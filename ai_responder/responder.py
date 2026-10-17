@@ -108,7 +108,8 @@ def nbsp(text: str) -> str:
 
 
 def norm_key(raw: str) -> str:
-    return raw.strip().lstrip("@").lower()
+    raw = re.sub(r"^(https?://)?(t\.me|telegram\.me)/", "", raw.strip())
+    return raw.lstrip("@").lower()
 
 
 def contact_for(user: User):
@@ -119,6 +120,9 @@ def contact_for(user: User):
     for k in keys:
         if k in state["contacts"]:
             return k, state["contacts"][k]
+    for k, c in state["contacts"].items():
+        if c.get("id") == user.id:  # юзернейм поменялся, а id тот же
+            return k, c
     return None, None
 
 
@@ -368,8 +372,10 @@ async def on_incoming(event):
     if not contact:
         return
     if contact.get("paused_until", 0) > time.time():
+        log.info("Пропускаю %s: на паузе", key)
         return
     if takeover_until.get(event.chat_id, 0) > time.time():
+        log.info("Пропускаю %s: ты недавно писал сам", key)
         return
 
     last_incoming[event.chat_id] = time.time()
@@ -410,7 +416,15 @@ async def handle_command(event):
         else:
             contacts.setdefault(key, {})["goal"] = tail.strip()
             contacts[key].pop("paused_until", None)
-            out = f"✅ @{key}: {tail.strip()}"
+            try:
+                ent = await client.get_entity(int(key) if key.isdigit() else key)
+                contacts[key]["id"] = ent.id
+                takeover_until.pop(ent.id, None)
+                who = " ".join(filter(None, [ent.first_name, ent.last_name]))
+                out = f"✅ @{key} ({who}): {tail.strip()}"
+            except Exception:
+                out = (f"⚠️ Добавил @{key}, но в Telegram такого не нашёл. "
+                       "Нужен именно @username из профиля человека, не имя. Если ошибся, /del и добавь заново")
     elif cmd == "/del":
         out = f"🗑 @{key} удалён" if contacts.pop(key, None) else "Такого нет в списке"
     elif cmd == "/pause":
@@ -425,16 +439,23 @@ async def handle_command(event):
             out = "Такого нет в списке"
         else:
             contacts[key].pop("paused_until", None)
+            takeover_until.pop(contacts[key].get("id"), None)
             out = f"▶️ @{key} снова на автоответе"
     elif cmd == "/list":
         if not contacts:
             out = "Список пуст. Добавь: /add @username цель"
         else:
             now = time.time()
-            lines = [
-                f"{'⏸' if c.get('paused_until', 0) > now else '▶️'} @{k}: {c['goal']}"
-                for k, c in contacts.items()
-            ]
+            lines = []
+            for k, c in contacts.items():
+                quiet = takeover_until.get(c.get("id"), 0) - now
+                paused = c.get("paused_until", 0) > now
+                line = f"{'⏸' if paused else '🤫' if quiet > 0 else '▶️'} @{k}: {c['goal']}"
+                if not paused and quiet > 0:
+                    line += f"\n   молчит ещё {quiet / 60:.0f} мин, ты писал сам. Снять: /resume @{k}"
+                if not c.get("id"):
+                    line += "\n   ⚠️ не нашёл в Telegram, проверь @username"
+                lines.append(line)
             out = f"Бот {'включён' if state['enabled'] else 'выключен'}\n\n" + "\n".join(lines)
     elif cmd == "/persona":
         if rest.strip():
@@ -514,6 +535,13 @@ async def handle_command(event):
 
 async def catch_up():
     """После перезапуска отвечаем тем, чьи сообщения остались без ответа."""
+    for k, c in state["contacts"].items():
+        if not c.get("id"):
+            try:
+                c["id"] = (await client.get_entity(int(k) if k.isdigit() else k)).id
+            except Exception:
+                log.warning("Не нашёл в Telegram @%s", k)
+    save_state()
     if not state["enabled"]:
         return
     async for dialog in client.iter_dialogs(limit=100):
