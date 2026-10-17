@@ -139,6 +139,19 @@ def contact_for(user: User):
 EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]+")
 
 
+# «О,», «Ого!», «Вау» и прочее показное удивление в начале фразы
+INTERJECTION = re.compile(
+    r"(^|(?<=[.!?\n])\s*)(о+|ого+|оу|ох|ах|вау|ух ты|ничего себе|ого-го|воу)\s*[,!.…]+\s*",
+    re.IGNORECASE)
+
+
+def clean_reply(text: str) -> str:
+    """Чистит ответ: смайлики, показное удивление, лишние восклицательные знаки."""
+    text = INTERJECTION.sub(lambda m: m.group(1), strip_smileys(text))
+    text = re.sub(r"!{2,}", "!", text)
+    return text.strip()
+
+
 def strip_smileys(text: str) -> str:
     """Убирает скобки-смайлики «)))» и эмодзи, но не настоящие скобки."""
     text = EMOJI.sub("", text)
@@ -176,6 +189,10 @@ def build_system_prompt(goal: str, name: str, memory: str = "") -> str:
         "заглавные буквы, знаки препинания, словечки. Пиши так же.\n"
         "- Никаких скобок-смайликов «)» «))» и эмодзи.\n"
         "- Не звучи как ассистент: без «Конечно!», «Отличный вопрос», «Буду рад помочь».\n"
+        "- Реагируй спокойно, как взрослый человек. Не удивляйся на каждую мелочь и не начинай "
+        "с междометий: никаких «О,», «Ого», «Вау», «Ух ты», «Ничего себе». Не повторяй за "
+        "собеседником его слова с восторгом. Восклицательный знак максимум один и редко.\n"
+        "- Не задавай вопрос в каждом сообщении: иногда просто отреагируй или поделись своим.\n"
         "- Как живой человек в мессенджере, можешь разбить ответ на 2–3 коротких "
         "сообщения, разделив их пустой строкой. Не делай так каждый раз."
     )
@@ -355,7 +372,7 @@ async def propose_nudge(key: str, contact: dict, force: bool = False) -> str | N
     silence = (time.time() - last.date.timestamp()) / 3600
     history.append({"role": "user", "content": f"[служебно: собеседник молчит {silence:.0f} ч. Напиши сообщение-продолжение]"})
     system = build_system_prompt(contact["goal"], key, contact.get("memory", "")) + "\n\n" + NUDGE_PROMPT
-    text = strip_smileys(await ask_ai(system, history))
+    text = clean_reply(await ask_ai(system, history))
     if not text or HANDOFF in text:
         return "Не придумал, что написать: тут лучше решить тебе"
     contact["nudged_msg"] = last.id
@@ -443,7 +460,7 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False):
         system = build_system_prompt(contact["goal"], name, contact.get("memory", ""))
         await client.send_read_acknowledge(chat_id)
         await asyncio.sleep(random.uniform(2, 8))  # прочитал, думает
-        answer = strip_smileys(await ask_ai(system, history))
+        answer = clean_reply(await ask_ai(system, history))
         if not answer:
             return
 
