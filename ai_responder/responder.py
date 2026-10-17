@@ -52,6 +52,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /resume @username — снова отвечать ему
 /list — кому бот отвечает
 /persona текст — общая инструкция: кто ты, чем занимаешься, тон
+/model — какая нейросеть отвечает; /model название — сменить её
 /on, /off — включить или выключить бота целиком
 Вместо @username можно указать числовой ID."""
 
@@ -122,7 +123,7 @@ async def ask_ai(system: str, history: list[dict]) -> str:
                 f"{AI_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {AI_API_KEY}"},
                 json={
-                    "model": AI_MODEL,
+                    "model": state.get("model") or AI_MODEL,
                     "messages": [{"role": "system", "content": system}, *history],
                     "temperature": 0.7,
                 },
@@ -316,6 +317,13 @@ async def handle_command(event):
             out = "✅ Инструкция обновлена"
         else:
             out = f"Текущая инструкция:\n{state['persona']}"
+    elif cmd == "/model":
+        if rest.strip():
+            state["model"] = rest.strip()
+            out = f"✅ Модель: {state['model']}"
+        else:
+            out = (f"Сейчас: {state.get('model') or AI_MODEL}\n"
+                   "Например: /model anthropic/claude-opus-5.5")
     elif cmd in ("/on", "/off"):
         state["enabled"] = cmd == "/on"
         out = "Бот включён" if state["enabled"] else "Бот выключен"
