@@ -73,6 +73,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /list — кому бот отвечает
 /reply @username — ответить этому человеку прямо сейчас
 /nudge @username — предложить вопрос этому человеку прямо сейчас
+/first @username [подсказка] — придумать первое сообщение, например /first @anya познакомились на выставке
 /ok номер, /no номер — согласовать предложенный вопрос (или ответь на него «да» / «нет» / своим текстом)
 /memory @username — что бот помнит о человеке
 /forget @username — стереть эту память
@@ -376,16 +377,44 @@ async def propose_nudge(key: str, contact: dict, force: bool = False) -> str | N
     if not text or HANDOFF in text:
         return "Не придумал, что написать: тут лучше решить тебе"
     contact["nudged_msg"] = last.id
+    await offer(key, cid, text, last.id, f"@{key} молчит {silence:.0f} ч. Предлагаю написать:")
+    return None
+
+
+async def offer(key: str, cid: int, text: str, last_id: int, headline: str):
+    """Присылает тебе в Избранное готовое сообщение; уйдёт оно только после твоего «да»."""
     state["nudge_seq"] = state.get("nudge_seq", 0) + 1
     nid = str(state["nudge_seq"])
-    head = nbsp(f"💬 №{nid}. @{key} молчит {silence:.0f} ч. Предлагаю написать:")
+    head = nbsp(f"💬 №{nid}. {headline}")
     tail = nbsp(f"Ответь на это сообщение: «да» отправлю, «нет» не надо, или пришли свой вариант. "
                 f"Ещё можно /ok {nid} или /no {nid}")
     sent = await client.send_message("me", f"{head}\n\n{text}\n\n{tail}")
     state.setdefault("nudges", {})[nid] = dict(
-        key=key, chat_id=cid, text=text, msg_id=sent.id, last_id=last.id, status="wait", created=time.time())
+        key=key, chat_id=cid, text=text, msg_id=sent.id, last_id=last_id, status="wait", created=time.time())
     save_state()
-    log.info("Предложил вопрос №%s для %s", nid, key)
+    log.info("Предложил сообщение №%s для %s", nid, key)
+
+
+FIRST_PROMPT = (
+    "Нужно написать этому человеку первым и начать разговор. Придумай одно короткое "
+    "первое сообщение: живое, без шаблонов вроде «Привет, как дела?» и без подкатов. "
+    "Зацепись за подсказку владельца, если она есть, и мягко веди к цели. "
+    "Если переписка уже была, учти её и не делай вид, что вы незнакомы. Выведи только текст сообщения."
+)
+
+
+async def propose_first(key: str, contact: dict, hint: str = "") -> str | None:
+    """Придумывает первое сообщение и присылает тебе на согласование."""
+    cid = contact["id"]
+    msgs = await client.get_messages(cid, limit=1)
+    history = await load_history(cid) if msgs else []
+    note = f" Подсказка владельца: {hint}" if hint else ""
+    history.append({"role": "user", "content": f"[служебно: напиши первое сообщение.{note}]"})
+    system = build_system_prompt(contact["goal"], key, contact.get("memory", "")) + "\n\n" + FIRST_PROMPT
+    text = clean_reply(await ask_ai(system, history))
+    if not text or HANDOFF in text:
+        return "Не придумал, с чего начать: подскажи, например /first @" + key + " познакомились на выставке"
+    await offer(key, cid, text, msgs[0].id if msgs else 0, f"Первое сообщение для @{key}:")
     return None
 
 
@@ -585,6 +614,14 @@ async def handle_command(event):
             out = f"Сначала добавь: /add @{key or 'username'} цель"
         else:
             out = await propose_nudge(key, contacts[key], force=True)
+            if out is None:
+                return
+    elif cmd == "/first":
+        if key not in contacts or not contacts[key].get("id"):
+            out = f"Сначала добавь: /add @{key or 'username'} цель"
+        else:
+            await event.reply("Придумываю…")
+            out = await propose_first(key, contacts[key], tail.strip())
             if out is None:
                 return
     elif cmd == "/del":
