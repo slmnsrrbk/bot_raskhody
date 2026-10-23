@@ -87,6 +87,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /matchgoal текст — цель по умолчанию для новых знакомств оттуда
 /first @username [подсказка] — придумать первое сообщение, например /first @anya познакомились на выставке
 /ok номер, /no номер — согласовать предложенный вопрос (или ответь на него «да» / «нет» / своим текстом)
+/undo @username [сколько] — удалить у обоих последнее сообщение (или несколько), отправленное этому человеку
 /show @username [сколько] — прислать тебе последние сообщения переписки (по умолчанию 10), с кружками и голосовыми
 /memory @username — что бот помнит о человеке
 /forget @username — стереть эту память
@@ -1042,6 +1043,21 @@ async def handle_command(event):
             except Exception:
                 out = (f"⚠️ Добавил @{key}, но в Telegram такого не нашёл. "
                        "Нужен именно @username из профиля человека, не имя. Если ошибся, /del и добавь заново")
+    elif cmd == "/undo":
+        if key not in contacts or not contacts[key].get("id"):
+            out = f"Такого нет в списке: @{key or 'username'}"
+        else:
+            cid = contacts[key]["id"]
+            n = min(int(tail) if tail.strip().isdigit() else 1, 20)
+            if task := pending.pop(cid, None):
+                task.cancel()  # и не отправлять то, что бот ещё только собирался написать
+            mine = [m for m in await client.get_messages(cid, limit=50) if m.out][:n]
+            if not mine:
+                out = f"Нечего удалять: в чате с @{key} нет твоих сообщений"
+            else:
+                await client.delete_messages(cid, [m.id for m in mine], revoke=True)
+                gone = "\n".join(f"— {describe(m)[:100]}" for m in reversed(mine))
+                out = f"🗑 Удалил у обоих в чате с @{key}:\n{gone}"
     elif cmd == "/show":
         if key not in contacts or not contacts[key].get("id"):
             out = f"Такого нет в списке. Добавь: /add @{key or 'username'} цель"
