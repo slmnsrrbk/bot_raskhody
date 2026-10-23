@@ -445,7 +445,7 @@ async def mirror(key: str, contact: dict, text: str, media_msg=None):
     try:
         if media_msg is not None and media_msg.media and not media_msg.web_preview:
             await client.send_file(group_id(), media_msg.media, caption=text[:1000], reply_to=tid,
-                                   voice_note=bool(media_msg.voice))
+                                   voice_note=bool(media_msg.voice), video_note=bool(media_msg.video_note))
         else:
             await client.send_message(group_id(), text, reply_to=tid)
     except Exception:
@@ -486,7 +486,7 @@ async def setup_group() -> str:
 
 async def transcribe(msg) -> str | None:
     """Голосовое → текст через Polza (OpenAI-совместимый /audio/transcriptions)."""
-    if AI_PROVIDER != "openai" or not msg.voice:
+    if AI_PROVIDER != "openai" or not (msg.voice or msg.video_note):
         return None
     cache = state.setdefault("voices", {})
     key = f"{msg.chat_id}:{msg.id}"
@@ -498,7 +498,7 @@ async def transcribe(msg) -> str | None:
             r = await http.post(
                 f"{AI_BASE_URL}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {AI_API_KEY}"},
-                files={"file": ("voice.ogg", audio, "audio/ogg")},
+                files={"file": ("voice.ogg", audio, "audio/ogg") if msg.voice else ("note.mp4", audio, "video/mp4")},
                 data={"model": AI_STT_MODEL, "language": "ru", "response_format": "json"},
             )
         r.raise_for_status()
@@ -532,8 +532,8 @@ async def load_history(chat_id: int) -> list[dict]:
     for m in reversed(msgs):
         role = "assistant" if m.out else "user"
         content = describe(m)
-        if m.voice and (heard := await transcribe(m)):
-            content = f"[голосовое] {heard}"
+        if (m.voice or m.video_note) and (heard := await transcribe(m)):
+            content = f"[{'голосовое' if m.voice else 'кружок'}] {heard}"
         if len(content) > 1500:
             content = content[:1500] + "…"
         quoted = by_id.get(m.reply_to_msg_id) if m.reply_to_msg_id else None
@@ -834,8 +834,8 @@ async def on_incoming(event):
     if group_id():
         msg = event.message
         text = msg.raw_text or ""
-        if msg.voice and (heard := await transcribe(msg)):
-            text = f"🎤 {heard}"
+        if (msg.voice or msg.video_note) and (heard := await transcribe(msg)):
+            text = f"{'🎤' if msg.voice else '🎥'} {heard}"
         await mirror(key, contact, f"{name}: {text}" if text else name, msg if msg.media else None)
     if not state["enabled"]:
         return
@@ -880,7 +880,8 @@ async def on_group(event):
     try:
         msg = event.message
         if msg.media and not msg.web_preview:
-            sent = await client.send_file(cid, msg.media, caption=text, voice_note=bool(msg.voice))
+            sent = await client.send_file(cid, msg.media, caption=text, voice_note=bool(msg.voice),
+                                         video_note=bool(msg.video_note))
         else:
             sent = await client.send_message(cid, text)
             remember_owner_text(text)
