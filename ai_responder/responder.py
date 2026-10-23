@@ -87,6 +87,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /matchgoal текст — цель по умолчанию для новых знакомств оттуда
 /first @username [подсказка] — придумать первое сообщение, например /first @anya познакомились на выставке
 /ok номер, /no номер — согласовать предложенный вопрос (или ответь на него «да» / «нет» / своим текстом)
+/show @username [сколько] — прислать тебе последние сообщения переписки (по умолчанию 10), с кружками и голосовыми
 /memory @username — что бот помнит о человеке
 /forget @username — стереть эту память
 /persona текст — общая инструкция: кто ты, чем занимаешься, тон
@@ -454,18 +455,47 @@ async def topic_for(key: str, contact: dict) -> int | None:
 
 
 async def mirror(key: str, contact: dict, text: str, media_msg=None):
-    """Дублирует сообщение в тему человека в группе."""
+    """Дублирует сообщение в тему человека; без группы кружки, голосовые и фото идут тебе в личку."""
     tid = await topic_for(key, contact)
-    if not tid:
+    has_media = media_msg is not None and media_msg.media and not media_msg.web_preview
+    if tid:
+        target = group_id()
+    elif has_media and control_id():
+        target, text = control_id(), f"@{key} · {text}"
+    else:
         return
     try:
-        if media_msg is not None and media_msg.media and not media_msg.web_preview:
-            await client.send_file(group_id(), media_msg.media, caption=text[:1000], reply_to=tid,
+        if has_media:
+            caption = "" if media_msg.video_note else text[:1000]
+            await client.send_file(target, media_msg.media, caption=caption, reply_to=tid,
                                    voice_note=bool(media_msg.voice), video_note=bool(media_msg.video_note))
+            if media_msg.video_note and text:
+                # у кружков нет подписи — расшифровку присылаем отдельным сообщением
+                await client.send_message(target, text, reply_to=tid)
         else:
-            await client.send_message(group_id(), text, reply_to=tid)
+            await client.send_message(target, text, reply_to=tid)
     except Exception:
         log.exception("Не удалось продублировать в группу")
+
+
+async def show_dialog(key: str, contact: dict, n: int):
+    """Присылает тебе последние сообщения переписки: текстом, а кружки, голосовые и фото — файлами."""
+    msgs = list(reversed(await client.get_messages(contact["id"], limit=n)))
+    name = contact.get("name") or key
+    lines = []
+    for m in msgs:
+        who = ("🤖" if m.id in bot_sent_ids else "Ты") if m.out else name
+        text = describe(m)
+        if (m.voice or m.video_note) and (heard := await transcribe(m)):
+            text = f"{'🎤' if m.voice else '🎥'} {heard}"
+        lines.append(f"[{when(m.date)}] {who}: {text}")
+    await notify(f"📜 Последние {len(msgs)} сообщений с @{key}:\n\n" + "\n".join(lines)[:3900], key=key)
+    for m in msgs:
+        if not m.out and (m.voice or m.video_note or m.photo or m.video):
+            target = group_id() or control_id() or "me"
+            tid = contact.get("topic") if group_id() else None
+            await client.send_file(target, m.media, caption="" if m.video_note else f"{name}, {when(m.date)}", reply_to=tid,
+                                   voice_note=bool(m.voice), video_note=bool(m.video_note))
 
 
 async def setup_group() -> str:
@@ -851,7 +881,7 @@ async def on_incoming(event):
     name = " ".join(filter(None, [user.first_name, user.last_name])) or key
     if contact.get("name") != name:
         contact["name"] = name
-    if group_id():
+    if group_id() or (control_id() and event.message.media):
         msg = event.message
         text = msg.raw_text or ""
         if (msg.voice or msg.video_note) and (heard := await transcribe(msg)):
@@ -989,6 +1019,13 @@ async def handle_command(event):
             except Exception:
                 out = (f"⚠️ Добавил @{key}, но в Telegram такого не нашёл. "
                        "Нужен именно @username из профиля человека, не имя. Если ошибся, /del и добавь заново")
+    elif cmd == "/show":
+        if key not in contacts or not contacts[key].get("id"):
+            out = f"Такого нет в списке. Добавь: /add @{key or 'username'} цель"
+        else:
+            n = min(int(tail) if tail.strip().isdigit() else 10, 50)
+            await show_dialog(key, contacts[key], n)
+            return
     elif cmd == "/reply":
         if key not in contacts:
             out = f"Сначала добавь: /add @{key or 'username'} цель"
