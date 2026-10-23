@@ -84,6 +84,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /list — кому бот отвечает
 /reply @username [контекст] — ответить прямо сейчас, сразу отправит. Например /reply @anya предложи субботу в 15
 /nudge @username [контекст] — придумать сообщение прямо сейчас и прислать тебе на согласование
+/lockmode on, /lockmode off — включить или выключить замок на группу (по умолчанию выключен)
 /lockword слово — задать кодовое слово для группы (сообщение сразу удалится); потом просто пиши это слово, чтобы открыть
 /lock — закрыть группу сейчас (она пропадёт из чатов); /set lock_min 30 — через сколько минут закрывать самой
 /group — создать группу с темой на каждый диалог; /group off — перестать дублировать
@@ -553,7 +554,7 @@ async def unlock_group() -> str:
     save_state()
     if lock_task:
         lock_task.cancel()
-    minutes = setting("lock_min")
+    minutes = setting("lock_min") if state.get("lock_enabled") else 0
     if minutes > 0:
         async def relock():
             await asyncio.sleep(minutes * 60)
@@ -1102,7 +1103,8 @@ async def handle_command(event):
             save_state()
             await event.reply(nbsp(out))
         return
-    if state.get("lock_hash") and text and not text.startswith("/") and word_hash(text) == state["lock_hash"]:
+    if (state.get("lock_enabled") and state.get("lock_hash") and text and not text.startswith("/")
+            and word_hash(text) == state["lock_hash"]):
         try:
             await client.delete_messages(event.chat_id, [event.id], revoke=True)
         except Exception:
@@ -1226,11 +1228,30 @@ async def handle_command(event):
         else:
             state["lock_hash"] = word_hash(rest)
             save_state()
-            note = await lock_group() if group_id() else "Группы пока нет, создай её: /group"
+            if not state.get("lock_enabled"):
+                note = "Замок сейчас выключен, включить: /lockmode on"
+            else:
+                note = await lock_group() if group_id() else "Группы пока нет, создай её: /group"
             await say_and_vanish(event, f"✅ Кодовое слово сохранено. {note}. Чтобы открыть, просто напиши это слово")
         return
     elif cmd == "/lock":
-        out = await lock_group()
+        out = await lock_group() if state.get("lock_enabled") else "Замок выключен. Включить: /lockmode on"
+    elif cmd == "/lockmode":
+        if key == "on":
+            state["lock_enabled"] = True
+            if not state.get("lock_hash"):
+                out = "✅ Замок включён. Задай кодовое слово: /lockword слово"
+            else:
+                out = "✅ Замок включён. " + (await lock_group() if group_id() else "Группы пока нет: /group")
+        elif key == "off":
+            state["lock_enabled"] = False
+            if lock_task:
+                lock_task.cancel()
+            out = "✅ Замок выключен"
+            if group_id() and state.get("group_locked"):
+                out += ". " + (await unlock_group())
+        else:
+            out = f"Замок {'включён' if state.get('lock_enabled') else 'выключен'}. /lockmode on или /lockmode off"
     elif cmd == "/control":
         if key in ("off", "me"):
             state.pop("control_id", None)
@@ -1427,6 +1448,11 @@ async def main():
         except Exception:
             log.warning("Не нашёл основной аккаунт @%s", CONTROL_USER)
     state.setdefault("bot_msgs_since", time.time())
+    if group_id() and state.get("group_locked") and not state.get("lock_enabled"):
+        try:
+            await unlock_group()
+        except Exception:
+            log.exception("Не удалось вернуть тебя в группу")
     save_state()
     await catch_up()
     asyncio.create_task(nudge_loop())
