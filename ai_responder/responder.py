@@ -167,6 +167,7 @@ def clean_reply(text: str) -> str:
     """Чистит ответ: смайлики, показное удивление, лишние восклицательные знаки."""
     text = re.sub(r"^\s*\[(сегодня|вчера|\d\d\.\d\d), \d\d:\d\d\]\s*", "", text)
     text = re.sub(r"^\s*\(в ответ на «[^»]*»\)\s*", "", text)
+    text = re.sub(r"\(написал владелец сам\)\s*", "", text)
     text = INTERJECTION.sub(lambda m: m.group(1), strip_smileys(text))
     text = re.sub(r"!{2,}", "!", text)
     return text.strip()
@@ -245,6 +246,11 @@ def build_system_prompt(goal: str, name: str, memory: str = "") -> str:
         f"Твоя цель в этом диалоге: {goal}\n\n"
         f"{notes}"
         "Правила:\n"
+        "- Сообщения с пометкой «(написал владелец сам)» владелец написал лично. Они главнее всего: "
+        "никогда им не противоречь, не меняй договорённости, время, места, планы и факты о нём, "
+        "которые он назвал, продолжай в их русле. Если не уверен, как это согласуется, ответь "
+        f"{HANDOFF}. Пометку сам не пиши.\n"
+        "- Не противоречь и своим прошлым сообщениям в этой переписке.\n"
         "- Перед ответом перечитай всю переписку целиком, а не только последнее сообщение: "
         "что уже обсудили, о чём договорились, на какие вопросы уже ответили. Не переспрашивай "
         "известное и не повторяй то, что уже писал.\n"
@@ -583,6 +589,8 @@ async def load_history(chat_id: int) -> list[dict]:
         content = describe(m)
         if (m.voice or m.video_note) and (heard := await transcribe(m)):
             content = f"[{'голосовое' if m.voice else 'кружок'}] {heard}"
+        if written_by_owner(chat_id, m):
+            content = f"(написал владелец сам) {content}"
         if len(content) > 1500:
             content = content[:1500] + "…"
         quoted = by_id.get(m.reply_to_msg_id) if m.reply_to_msg_id else None
@@ -598,6 +606,23 @@ async def load_history(chat_id: int) -> list[dict]:
     return history
 
 
+def mark_bot_msg(chat_id: int, msg_id: int):
+    msgs = state.setdefault("bot_msgs", {}).setdefault(str(chat_id), [])
+    msgs.append(msg_id)
+    del msgs[:-300]
+    save_state()
+
+
+def written_by_bot(chat_id: int, msg) -> bool:
+    return msg.id in bot_sent_ids or msg.id in state.get("bot_msgs", {}).get(str(chat_id), [])
+
+
+def written_by_owner(chat_id: int, msg) -> bool:
+    """Исходящее, которое писал ты сам. Старые сообщения (до учёта) не размечаем."""
+    since = state.get("bot_msgs_since", time.time())
+    return msg.out and not written_by_bot(chat_id, msg) and msg.date and msg.date.timestamp() >= since
+
+
 async def you_wrote_last(chat_id: int, first: bool) -> bool:
     """Последнее сообщение в чате — твоё (а не бота)? Тогда поверх ничего не пишем."""
     msgs = await client.get_messages(chat_id, limit=1)
@@ -607,7 +632,7 @@ async def you_wrote_last(chat_id: int, first: bool) -> bool:
     return first or msgs[0].id not in bot_sent_ids
 
 
-async def send_text(chat_id: int, text: str, forced: bool = False) -> bool:
+async def send_text(chat_id: int, text: str, forced: bool = False, by_owner: bool = False) -> bool:
     """Отправляет от твоего имени: «печатает…», затем сообщение (или 2–3 подряд).
     Не пишет поверх тебя: если последним в чате стало твоё сообщение, останавливается."""
     for i, part in enumerate(split_parts(text)):
@@ -622,6 +647,8 @@ async def send_text(chat_id: int, text: str, forced: bool = False) -> bool:
         try:
             sent = await client.send_message(chat_id, part)
             bot_sent_ids.add(sent.id)
+            if not by_owner:
+                mark_bot_msg(chat_id, sent.id)
         finally:
             bot_sending.discard(chat_id)
         key, contact = contact_by_id(chat_id)
@@ -718,7 +745,7 @@ async def resolve_nudge(nid: str, approve: bool, custom: str = "") -> str:
     text = custom.strip() or n["text"]
     if custom.strip():
         remember_owner_text(custom, draft=n["text"])
-    await send_text(n["chat_id"], text, forced=True)
+    await send_text(n["chat_id"], text, forced=True, by_owner=bool(custom.strip()))
     n["status"] = "sent"
     contact = state["contacts"].get(n["key"])
     if contact:
@@ -1307,6 +1334,8 @@ async def main():
             await notify("Привет, теперь я пишу сюда. Команды присылай в этот чат, начни с /help")
         except Exception:
             log.warning("Не нашёл основной аккаунт @%s", CONTROL_USER)
+    state.setdefault("bot_msgs_since", time.time())
+    save_state()
     await catch_up()
     asyncio.create_task(nudge_loop())
     await client.run_until_disconnected()
