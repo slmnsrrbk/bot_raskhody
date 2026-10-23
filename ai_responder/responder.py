@@ -71,8 +71,8 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /pause @username [минуты] — заглушить для одного человека
 /resume @username — снова отвечать ему
 /list — кому бот отвечает
-/reply @username — ответить этому человеку прямо сейчас
-/nudge @username — предложить вопрос этому человеку прямо сейчас
+/reply @username [контекст] — ответить прямо сейчас, сразу отправит. Например /reply @anya предложи субботу в 15
+/nudge @username [контекст] — придумать сообщение прямо сейчас и прислать тебе на согласование
 /first @username [подсказка] — придумать первое сообщение, например /first @anya познакомились на выставке
 /ok номер, /no номер — согласовать предложенный вопрос (или ответь на него «да» / «нет» / своим текстом)
 /memory @username — что бот помнит о человеке
@@ -360,7 +360,7 @@ def local_hour() -> int:
     return int((time.gmtime().tm_hour + setting("tz")) % 24)
 
 
-async def propose_nudge(key: str, contact: dict, force: bool = False) -> str | None:
+async def propose_nudge(key: str, contact: dict, force: bool = False, hint: str = "") -> str | None:
     """Готовит вопрос для затихшего разговора и присылает его тебе на согласование."""
     cid = contact.get("id")
     msgs = await client.get_messages(cid, limit=1)
@@ -371,7 +371,8 @@ async def propose_nudge(key: str, contact: dict, force: bool = False) -> str | N
         return None  # ждём не мы, а нас — это обычный ответ
     history = await load_history(cid)
     silence = (time.time() - last.date.timestamp()) / 3600
-    history.append({"role": "user", "content": f"[служебно: собеседник молчит {silence:.0f} ч. Напиши сообщение-продолжение]"})
+    note = f" Владелец просит учесть: {hint}" if hint else ""
+    history.append({"role": "user", "content": f"[служебно: собеседник молчит {silence:.0f} ч. Напиши сообщение-продолжение.{note}]"})
     system = build_system_prompt(contact["goal"], key, contact.get("memory", "")) + "\n\n" + NUDGE_PROMPT
     text = clean_reply(await ask_ai(system, history))
     if not text or HANDOFF in text:
@@ -468,7 +469,7 @@ async def nudge_loop():
             log.exception("Не удалось проверить затихшие разговоры")
 
 
-async def reply_later(chat_id: int, user: User, key: str, now: bool = False):
+async def reply_later(chat_id: int, user: User, key: str, now: bool = False, hint: str = ""):
     try:
         delay = random.uniform(2, 6) if now else human_delay(chat_id)
         log.info("Отвечу %s примерно через %d с", key, delay)
@@ -487,6 +488,11 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False):
 
         name = " ".join(filter(None, [user.first_name, user.last_name])) or key
         system = build_system_prompt(contact["goal"], name, contact.get("memory", ""))
+        if hint:
+            system += f"\n\nУказание владельца для этого сообщения (учти, но не цитируй): {hint}"
+        if history[-1]["role"] != "user":
+            # последним писали мы — просят написать ещё раз, самим
+            history.append({"role": "user", "content": "[служебно: напиши следующее сообщение сам, продолжи разговор]"})
         await client.send_read_acknowledge(chat_id)
         await asyncio.sleep(random.uniform(2, 8))  # прочитал, думает
         answer = clean_reply(await ask_ai(system, history))
@@ -504,7 +510,8 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False):
         await send_text(chat_id, answer)
         log.info("Ответил %s: %s", key, answer[:80])
         history.append({"role": "assistant", "content": answer})
-        asyncio.create_task(update_memory(key, contact["goal"], history))
+        real = [m for m in history if not m["content"].startswith("[служебно")]
+        asyncio.create_task(update_memory(key, contact["goal"], real))
     except asyncio.CancelledError:
         pass
     except Exception:
@@ -603,8 +610,9 @@ async def handle_command(event):
                 takeover_until.pop(ent.id, None)
                 if task := pending.pop(ent.id, None):
                     task.cancel()
-                pending[ent.id] = asyncio.create_task(reply_later(ent.id, ent, key, now=True))
-                out = f"✍️ Отвечаю @{key}"
+                hint = tail.strip()
+                pending[ent.id] = asyncio.create_task(reply_later(ent.id, ent, key, now=True, hint=hint))
+                out = f"✍️ Отвечаю @{key}" + (f", учитываю: {hint}" if hint else "")
             except Exception:
                 out = f"⚠️ Не нашёл @{key} в Telegram"
     elif cmd in ("/ok", "/no"):
@@ -613,7 +621,8 @@ async def handle_command(event):
         if key not in contacts or not contacts[key].get("id"):
             out = f"Сначала добавь: /add @{key or 'username'} цель"
         else:
-            out = await propose_nudge(key, contacts[key], force=True)
+            await event.reply("Придумываю…")
+            out = await propose_nudge(key, contacts[key], force=True, hint=tail.strip())
             if out is None:
                 return
     elif cmd == "/first":
