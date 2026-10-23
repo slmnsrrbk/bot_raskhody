@@ -17,7 +17,7 @@ import time
 import httpx
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
-from telethon.tl.types import User
+from telethon.tl.types import MessageEntityMentionName, MessageEntityTextUrl, MessageEntityUrl, User
 
 load_dotenv(os.getenv("ENV_FILE", ".env"))
 
@@ -73,6 +73,8 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /list — кому бот отвечает
 /reply @username [контекст] — ответить прямо сейчас, сразу отправит. Например /reply @anya предложи субботу в 15
 /nudge @username [контекст] — придумать сообщение прямо сейчас и прислать тебе на согласование
+/matchbot @имя — из какого бота знакомств ловить взаимные лайки (сейчас Дайвинчик @leomatchbot)
+/matchgoal текст — цель по умолчанию для новых знакомств оттуда
 /first @username [подсказка] — придумать первое сообщение, например /first @anya познакомились на выставке
 /ok номер, /no номер — согласовать предложенный вопрос (или ответь на него «да» / «нет» / своим текстом)
 /memory @username — что бот помнит о человеке
@@ -521,6 +523,74 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False, hin
             pending.pop(chat_id, None)
 
 
+DEFAULT_MATCH_GOAL = "познакомиться поближе и договориться о встрече"
+USER_LINK = re.compile(r"(?:https?://)?t\.me/([A-Za-z]\w{3,31})|tg://user\?id=(\d+)|@([A-Za-z]\w{3,31})")
+
+
+def match_bots() -> set[str]:
+    return set(state.get("match_bots", ["leomatchbot"]))
+
+
+async def find_person(msg):
+    """Достаёт человека из сообщения бота знакомств: упоминание, ссылка t.me или tg://user."""
+    for ent in msg.entities or []:
+        if isinstance(ent, MessageEntityMentionName):
+            return await client.get_entity(ent.user_id)
+    links = [e.url for e in msg.entities or [] if isinstance(e, MessageEntityTextUrl)]
+    links += [msg.raw_text[e.offset:e.offset + e.length] for e in msg.entities or [] if isinstance(e, MessageEntityUrl)]
+    for text in links + [msg.raw_text or ""]:
+        for m in USER_LINK.finditer(text):
+            name, uid, at = m.groups()
+            target = int(uid) if uid else (name or at)
+            if (name or at or "").lower() in match_bots():
+                continue
+            try:
+                ent = await client.get_entity(target)
+            except Exception:
+                continue
+            if isinstance(ent, User) and not ent.bot:
+                return ent
+    return None
+
+
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+async def on_match(event):
+    sender = await event.get_sender()
+    if not isinstance(sender, User) or not sender.bot or (sender.username or "").lower() not in match_bots():
+        return
+    person = await find_person(event.message)
+    if not person:
+        return
+    if any(c.get("id") == person.id for c in state["contacts"].values()):
+        return
+    who = " ".join(filter(None, [person.first_name, person.last_name])) or "без имени"
+    handle = f"@{person.username}" if person.username else f"id {person.id}"
+    head = nbsp(f"❤️ Взаимный лайк: {who} ({handle}).")
+    tail = nbsp("Ответь на это сообщение «да», и я добавлю человека и предложу первое сообщение. "
+                "Можно ответить своей целью вместо «да». «Нет», если не интересно.")
+    sent = await client.send_message("me", f"{head}\n\n{tail}")
+    state.setdefault("matches", {})[str(sent.id)] = dict(
+        user_id=person.id, username=person.username, name=who, status="wait", created=time.time())
+    save_state()
+    log.info("Взаимный лайк: %s", handle)
+
+
+async def accept_match(mid: str, goal: str) -> str | None:
+    m = state["matches"][mid]
+    if m["status"] != "wait":
+        return "Уже обработано"
+    m["status"] = "added"
+    key = (m.get("username") or str(m["user_id"])).lower()
+    state["contacts"][key] = {"goal": goal or state.get("match_goal", DEFAULT_MATCH_GOAL), "id": m["user_id"]}
+    save_state()
+    if not m.get("username"):
+        try:
+            await client.get_entity(m["user_id"])
+        except Exception:
+            return f"Добавил {m['name']}, но без юзернейма не могу написать первым. Напиши сам, дальше бот подхватит"
+    return await propose_first(key, state["contacts"][key], "познакомились в Дайвинчике, взаимный лайк")
+
+
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def on_incoming(event):
     if not state["enabled"]:
@@ -563,6 +633,18 @@ async def on_outgoing(event):
 async def handle_command(event):
     text = (event.raw_text or "").strip()
     if event.is_reply and text and not text.startswith("/"):
+        mid = str(event.reply_to_msg_id)
+        if mid in state.get("matches", {}):
+            word = text.lower().strip(" .!")
+            if word in NO:
+                state["matches"][mid]["status"] = "no"
+                out = "Ок, пропускаю"
+            else:
+                out = await accept_match(mid, "" if word in YES else text)
+            save_state()
+            if out:
+                await event.reply(nbsp(out))
+            return
         nid = next((k for k, n in state.get("nudges", {}).items() if n["msg_id"] == event.reply_to_msg_id), None)
         if nid:
             word = text.lower().strip(" .!")
@@ -625,6 +707,18 @@ async def handle_command(event):
             out = await propose_nudge(key, contacts[key], force=True, hint=tail.strip())
             if out is None:
                 return
+    elif cmd == "/matchbot":
+        if key:
+            state["match_bots"] = [key]
+            out = f"✅ Ловлю взаимные лайки из @{key}"
+        else:
+            out = "Сейчас: " + ", ".join(f"@{b}" for b in match_bots())
+    elif cmd == "/matchgoal":
+        if rest.strip():
+            state["match_goal"] = rest.strip()
+            out = "✅ Цель для новых знакомств запомнил"
+        else:
+            out = f"Сейчас: {state.get('match_goal', DEFAULT_MATCH_GOAL)}"
     elif cmd == "/first":
         if key not in contacts or not contacts[key].get("id"):
             out = f"Сначала добавь: /add @{key or 'username'} цель"
