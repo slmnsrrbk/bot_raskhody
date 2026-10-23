@@ -22,8 +22,10 @@ from telethon import TelegramClient, events, utils
 from telethon.tl.functions.channels import (
     CreateChannelRequest, CreateForumTopicRequest, EditAdminRequest, InviteToChannelRequest,
     TogglePreHistoryHiddenRequest)
-from telethon.tl.functions.messages import ExportChatInviteRequest
-from telethon.tl.types import ChatAdminRights, MessageActionTopicCreate, UpdateNewChannelMessage, MessageEntityMentionName, MessageEntityTextUrl, MessageEntityUrl, User
+from telethon import errors
+from telethon.tl.functions.messages import ExportChatInviteRequest, GetPeerDialogsRequest
+from telethon.tl.functions.users import GetUsersRequest
+from telethon.tl.types import InputDialogPeer, UserStatusEmpty, ChatAdminRights, MessageActionTopicCreate, UpdateNewChannelMessage, MessageEntityMentionName, MessageEntityTextUrl, MessageEntityUrl, User
 
 load_dotenv(os.getenv("ENV_FILE", ".env"))
 
@@ -95,6 +97,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /ok номер, /no номер — согласовать предложенный вопрос (или ответь на него «да» / «нет» / своим текстом)
 /undo @username [сколько] [фото|видео|голосовое|кружок] — удалить у обоих последние твои сообщения этому человеку, можно только определённого типа
 Можно писать и обычными словами, например «в чате с anya удали фото» — бот поймёт и спросит подтверждение
+/check @username — проверить, не заблокировал ли тебя человек (бот и сам проверяет раз в час)
 /show @username [сколько] — прислать тебе последние сообщения переписки (по умолчанию 10), с кружками и голосовыми
 /memory @username — что бот помнит о человеке
 /forget @username — стереть эту память
@@ -887,6 +890,60 @@ async def check_nudges():
         await propose_nudge(key, c)
 
 
+def explain_error(e: Exception) -> str:
+    if isinstance(e, errors.PeerFloodError):
+        return "Telegram ограничил аккаунт за спам, писать новым людям пока нельзя (проверить: @SpamBot)"
+    if isinstance(e, errors.FloodWaitError):
+        return f"Telegram просит подождать {e.seconds} с: слишком много действий подряд"
+    if isinstance(e, (errors.UserPrivacyRestrictedError, errors.UserIsBlockedError)):
+        return "человек ограничил, кто может ему писать, или заблокировал тебя"
+    if isinstance(e, errors.InputUserDeactivatedError):
+        return "аккаунт удалён"
+    return str(e)
+
+
+async def block_signs(contact: dict) -> list[str]:
+    """Косвенные признаки блокировки: Telegram прямо об этом не сообщает."""
+    peer = await client.get_input_entity(contact["id"])
+    user = (await client(GetUsersRequest([peer])))[0]
+    if getattr(user, "deleted", False):
+        return ["аккаунт удалён"]
+    signs = []
+    hidden = (user.status is None or isinstance(user.status, UserStatusEmpty)) and user.photo is None
+    if hidden and contact.get("was_visible"):
+        signs.append("пропали фото профиля и «был(а) в сети»")
+    elif not hidden:
+        contact["was_visible"] = True
+    dialog = (await client(GetPeerDialogsRequest([InputDialogPeer(peer)]))).dialogs[0]
+    msgs = await client.get_messages(contact["id"], limit=1)
+    if msgs and msgs[0].out and msgs[0].id > dialog.read_outbox_max_id:
+        hours = (time.time() - msgs[0].date.timestamp()) / 3600
+        if hours > 24:
+            signs.append(f"твоё последнее сообщение не прочитано уже {hours:.0f} ч")
+    return signs
+
+
+async def check_blocks():
+    for key, c in list(state["contacts"].items()):
+        if not c.get("id") or c["id"] == control_id():
+            continue
+        try:
+            signs = await block_signs(c)
+        except Exception:
+            log.exception("Не удалось проверить @%s", key)
+            continue
+        flag = " и ".join(signs)
+        # главный признак — пропавшие фото и статус; одно непрочитанное ещё ни о чём не говорит
+        if signs and (len(signs) > 1 or "удалён" in flag or "пропали" in flag):
+            if c.get("block_flag") != flag:
+                c["block_flag"] = flag
+                await notify(nbsp(f"⚠️ Похоже, @{key} тебя заблокировал(а): {flag}. "
+                                  "Точно Telegram не сообщает, так бывает и из-за настроек приватности"), key=key)
+        elif c.pop("block_flag", None):
+            await notify(f"✅ @{key} снова виден(а), похоже, блокировки нет", key=key)
+    save_state()
+
+
 async def nudge_loop():
     while True:
         await asyncio.sleep(300)
@@ -894,6 +951,12 @@ async def nudge_loop():
             await check_nudges()
         except Exception:
             log.exception("Не удалось проверить затихшие разговоры")
+        if time.time() - state.get("blocks_at", 0) > 3600:
+            state["blocks_at"] = time.time()
+            try:
+                await check_blocks()
+            except Exception:
+                log.exception("Не удалось проверить блокировки")
         if not state.get("lessons_off") and time.time() - state.get("lessons_at", 0) > 86400:
             try:
                 await learn()
@@ -949,7 +1012,7 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False, hin
     except Exception as e:
         log.exception("Не удалось ответить %s", key)
         try:
-            await notify(nbsp(f"⚠️ Не смог ответить @{key}: {e}. Ответь сам или /reply @{key}"), key=key)
+            await notify(nbsp(f"⚠️ Не смог ответить @{key}: {explain_error(e)}. Ответь сам или /reply @{key}"), key=key)
         except Exception:
             pass
     finally:
@@ -1098,7 +1161,7 @@ async def on_group(event):
         link_copy(event.id, cid, sent.id, True)
     except Exception as e:
         log.exception("Не удалось отправить из группы")
-        await event.reply(f"⚠️ Не отправилось: {e}")
+        await event.reply(nbsp(f"⚠️ Не отправилось: {explain_error(e)}"))
     finally:
         bot_sending.discard(cid)
     last_reply[cid] = time.time()
@@ -1280,6 +1343,14 @@ async def handle_command(event):
                 await client.delete_messages(cid, [m.id for m in mine], revoke=True)
                 gone = "\n".join(f"— {describe(m)[:100]}" for m in reversed(mine))
                 out = f"🗑 Удалил у обоих в чате с @{key}:\n{gone}"
+    elif cmd == "/check":
+        if key not in contacts or not contacts[key].get("id"):
+            out = f"Такого нет в списке: @{key or 'username'}"
+        else:
+            signs = await block_signs(contacts[key])
+            save_state()
+            out = (f"⚠️ У @{key}: " + " и ".join(signs) + ". Похоже на блокировку, но точно Telegram не сообщает"
+                   if signs else f"✅ С @{key} признаков блокировки нет")
     elif cmd == "/show":
         if key not in contacts or not contacts[key].get("id"):
             out = f"Такого нет в списке. Добавь: /add @{key or 'username'} цель"
