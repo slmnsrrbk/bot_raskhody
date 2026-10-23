@@ -31,6 +31,7 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "chadgpt")
 AI_API_KEY = os.environ["AI_API_KEY"]
 AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+AI_FALLBACK_MODEL = os.getenv("AI_FALLBACK_MODEL", "anthropic/claude-haiku-5.5")
 AI_STT_MODEL = os.getenv("AI_STT_MODEL", "openai/gpt-4o-mini-transcribe")
 # основной аккаунт, с которого ты управляешь ботом (по умолчанию — Избранное)
 CONTROL_USER = os.getenv("CONTROL_USER", "").strip().lstrip("@")
@@ -135,6 +136,8 @@ def norm_key(raw: str) -> str:
 
 def contact_for(user: User):
     """Возвращает (ключ, настройки) если человек в списке."""
+    if user.id == state.get("control_id"):
+        return None, None  # основной аккаунт — это ты, а не собеседник
     keys = [str(user.id)]
     if user.username:
         keys.append(user.username.lower())
@@ -299,17 +302,30 @@ async def update_memory(key: str, goal: str, history: list[dict]):
 async def ask_ai(system: str, history: list[dict]) -> str:
     async with httpx.AsyncClient(timeout=60) as http:
         if AI_PROVIDER == "openai":
-            r = await http.post(
-                f"{AI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {AI_API_KEY}"},
-                json={
-                    "model": state.get("model") or AI_MODEL,
-                    "messages": [{"role": "system", "content": system}, *history],
-                    "temperature": 0.7,
-                },
-            )
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
+            models = [state.get("model") or AI_MODEL, AI_FALLBACK_MODEL]
+            last_error = None
+            for attempt in range(4):
+                # сервис иногда отвечает 5xx — ждём и пробуем снова, в конце запасной моделью
+                model = models[1] if attempt == 3 and models[1] else models[0]
+                try:
+                    r = await http.post(
+                        f"{AI_BASE_URL}/chat/completions",
+                        headers={"Authorization": f"Bearer {AI_API_KEY}"},
+                        json={
+                            "model": model,
+                            "messages": [{"role": "system", "content": system}, *history],
+                            "temperature": 0.7,
+                        },
+                    )
+                    if r.status_code < 500 and r.status_code != 429:
+                        r.raise_for_status()
+                        return r.json()["choices"][0]["message"]["content"].strip()
+                    last_error = f"{model}: HTTP {r.status_code}"
+                except httpx.TransportError as e:
+                    last_error = f"{model}: {e!r}"
+                log.warning("Нейросеть не ответила (%s), попытка %d", last_error, attempt + 1)
+                await asyncio.sleep(5 * (attempt + 1))
+            raise RuntimeError(f"Нейросеть недоступна: {last_error}")
 
         # ChadGPT принимает одно поле message, поэтому склеиваем всё в один текст
         transcript = "\n".join(
@@ -672,7 +688,7 @@ async def check_nudges():
     waiting = {n["chat_id"] for n in state.get("nudges", {}).values() if n["status"] == "wait"}
     for key, c in list(state["contacts"].items()):
         cid = c.get("id")
-        if not cid or cid in pending or cid in waiting or c.get("paused_until", 0) > time.time():
+        if not cid or cid == control_id() or cid in pending or cid in waiting or c.get("paused_until", 0) > time.time():
             continue
         if c.get("nudges_in_row", 0) >= setting("nudge_max"):
             continue
@@ -742,8 +758,12 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False, hin
         asyncio.create_task(update_memory(key, contact["goal"], real))
     except asyncio.CancelledError:
         pass
-    except Exception:
+    except Exception as e:
         log.exception("Не удалось ответить %s", key)
+        try:
+            await notify(nbsp(f"⚠️ Не смог ответить @{key}: {e}. Ответь сам или /reply @{key}"), key=key)
+        except Exception:
+            pass
     finally:
         if pending.get(chat_id) is asyncio.current_task():
             pending.pop(chat_id, None)
@@ -1171,7 +1191,7 @@ async def catch_up():
         return
     async for dialog in client.iter_dialogs(limit=100):
         user = dialog.entity
-        if not isinstance(user, User) or user.bot or user.is_self:
+        if not isinstance(user, User) or user.bot or user.is_self or user.id == control_id():
             continue
         key, contact = contact_for(user)
         if not contact or contact.get("paused_until", 0) > time.time():
