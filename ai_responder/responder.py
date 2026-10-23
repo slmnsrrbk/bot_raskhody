@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -44,6 +45,7 @@ SETTINGS = {
     "long_chance": (0, "как часто ответить позже обычного, % (0 = никогда)"),
     "long_max": (600, "такая поздняя пауза до, сек"),
     "typing_speed": (5, "скорость набора, символов в секунду"),
+    "history": (100, "сколько последних сообщений переписки читать перед ответом"),
     "quiet_min": (0, "сколько минут молчать в чате, если ты написал сам (0 = не молчать)"),
     "nudge_after_min": (180, "через сколько минут тишины предложить вопрос (0 = выключено)"),
     "nudge_max": (1, "сколько раз подряд можно напомнить о себе без ответа"),
@@ -55,7 +57,6 @@ SETTINGS = {
 
 def setting(key: str) -> float:
     return float(state.get("settings", {}).get(key, SETTINGS[key][0]))
-HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "30"))
 
 DATA_DIR = os.getenv("DATA_DIR", "data")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
@@ -159,6 +160,8 @@ INTERJECTION = re.compile(
 
 def clean_reply(text: str) -> str:
     """Чистит ответ: смайлики, показное удивление, лишние восклицательные знаки."""
+    text = re.sub(r"^\s*\[(сегодня|вчера|\d\d\.\d\d), \d\d:\d\d\]\s*", "", text)
+    text = re.sub(r"^\s*\(в ответ на «[^»]*»\)\s*", "", text)
     text = INTERJECTION.sub(lambda m: m.group(1), strip_smileys(text))
     text = re.sub(r"!{2,}", "!", text)
     return text.strip()
@@ -237,6 +240,12 @@ def build_system_prompt(goal: str, name: str, memory: str = "") -> str:
         f"Твоя цель в этом диалоге: {goal}\n\n"
         f"{notes}"
         "Правила:\n"
+        "- Перед ответом перечитай всю переписку целиком, а не только последнее сообщение: "
+        "что уже обсудили, о чём договорились, на какие вопросы уже ответили. Не переспрашивай "
+        "известное и не повторяй то, что уже писал.\n"
+        "- Если собеседник написал несколько сообщений подряд, ответь на всё важное в них, "
+        "а не только на последнее. Если он ответил на твой вопрос, учти ответ.\n"
+        "- Метки времени в квадратных скобках показывают паузы в разговоре; сам их не пиши.\n"
         "- Веди разговор к цели мягко, не дави и не повторяйся.\n"
         "- Не выдумывай факты, цены, сроки и обещания, которых нет в инструкции.\n"
         "- Если прямо спросят, бот ли ты, честно скажи, что это ИИ-ассистент владельца.\n"
@@ -506,14 +515,33 @@ async def transcribe(msg) -> str | None:
     return text or None
 
 
+def when(dt: datetime.datetime) -> str:
+    """Дата по твоему времени: «сегодня, 21:40», «вчера, 21:40», «12.10, 21:40»."""
+    tz = datetime.timezone(datetime.timedelta(hours=setting("tz")))
+    local, today = dt.astimezone(tz), datetime.datetime.now(tz).date()
+    day = {0: "сегодня", 1: "вчера"}.get((today - local.date()).days, local.strftime("%d.%m"))
+    return f"{day}, {local:%H:%M}"
+
+
 async def load_history(chat_id: int) -> list[dict]:
-    msgs = await client.get_messages(chat_id, limit=HISTORY_LIMIT)
+    """Вся недавняя переписка: с датами после пауз и с тем, на что отвечали цитатой."""
+    msgs = await client.get_messages(chat_id, limit=int(setting("history")))
+    by_id = {m.id: m for m in msgs}
     history = []
+    prev = None
     for m in reversed(msgs):
         role = "assistant" if m.out else "user"
         content = describe(m)
         if m.voice and (heard := await transcribe(m)):
             content = f"[голосовое] {heard}"
+        if len(content) > 1500:
+            content = content[:1500] + "…"
+        quoted = by_id.get(m.reply_to_msg_id) if m.reply_to_msg_id else None
+        if quoted:
+            content = f"(в ответ на «{describe(quoted)[:120]}») {content}"
+        if m.date and (prev is None or (m.date - prev).total_seconds() > 3600):
+            content = f"[{when(m.date)}] {content}"
+        prev = m.date or prev
         if history and history[-1]["role"] == role:
             history[-1]["content"] += "\n" + content
         else:
