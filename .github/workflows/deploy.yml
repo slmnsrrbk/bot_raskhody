@@ -13,6 +13,10 @@ on:
         description: "Только для ai-code: код входа из Telegram"
         required: false
         type: string
+      control:
+        description: "Только для ai-install: основной аккаунт для управления, например @username"
+        required: false
+        type: string
 
 jobs:
   deploy:
@@ -31,7 +35,7 @@ jobs:
       TG_API_HASH: ${{ secrets.TG_API_HASH }}
       TG_PHONE: ${{ secrets.TG_PHONE }}
       TG_2FA_PASSWORD: ${{ secrets.TG_2FA_PASSWORD }}
-      TG_CONTROL_USER: ${{ secrets.TG_CONTROL_USER }}
+      TG_CONTROL_USER: ${{ inputs.control || secrets.TG_CONTROL_USER }}
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_MODEL: ${{ vars.AI_MODEL }}
       LOGIN_CODE: ${{ inputs.code }}
