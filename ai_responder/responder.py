@@ -94,6 +94,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /style текст — как ты пишешь (коротко, с маленькой буквы, без точек…)
 /example текст — добавить пример твоего сообщения, можно несколько строк сразу
 /examples — показать примеры; /examples clear — удалить их
+/lessons — что бот вынес из прошлых разговоров; /learn — обновить сейчас; /lessons clear — стереть; /lessons off, /lessons on — не учитывать или снова учитывать
 /model — какая нейросеть отвечает; /model название — сменить её
 /on, /off — включить или выключить бота целиком
 Вместо @username можно указать числовой ID."""
@@ -178,7 +179,53 @@ def style_block() -> str:
     if state.get("style_examples"):
         out += "Примеры его настоящих сообщений:\n" + "\n".join(
             f"— {e}" for e in state["style_examples"][-40:]) + "\n\n"
+    if state.get("lessons") and not state.get("lessons_off"):
+        out += f"Выводы из прошлых разговоров (общие правила, соблюдай их):\n{state['lessons']}\n\n"
     return out
+
+
+def remember_owner_text(text: str, draft: str = ""):
+    """Твои настоящие сообщения — лучшие примеры стиля; правки бота — материал для выводов."""
+    text = text.strip()
+    if not text or text.startswith("/") or len(text) > 300:
+        return
+    examples = state.setdefault("style_examples", [])
+    if text not in examples:
+        examples.append(text)
+        state["style_examples"] = examples[-80:]
+    if draft and draft.strip() != text:
+        state.setdefault("corrections", []).append({"bot": draft.strip(), "owner": text})
+        state["corrections"] = state["corrections"][-50:]
+    save_state()
+
+
+LEARN_PROMPT = (
+    "Ты помогаешь ассистенту, который переписывается в Telegram от имени владельца, становиться лучше. "
+    "Ниже: заметки по разным диалогам (чем всё закончилось), правки владельца (что предлагал бот и как "
+    "владелец написал на самом деле) и прежние выводы. Сформулируй общие правила общения: что работает, "
+    "что нет, как владелец пишет иначе, чем бот. Только обобщения, без имён, мест, дат и личных фактов "
+    "о конкретных людях. Не больше 12 коротких пунктов. Старые выводы сохраняй, если новые данные их не "
+    "опровергают. Выведи только пункты."
+)
+
+
+async def learn() -> str:
+    notes = [c["memory"] for c in state["contacts"].values() if c.get("memory")]
+    fixes = state.get("corrections", [])
+    if not notes and not fixes:
+        return "Пока не на чем учиться: нужны разговоры или твои правки"
+    parts = ["Прежние выводы:\n" + (state.get("lessons") or "(пока нет)")]
+    if notes:
+        parts.append("Заметки по диалогам:\n" + "\n---\n".join(notes))
+    if fixes:
+        parts.append("Правки владельца:\n" + "\n".join(f"бот: {f['bot']}\nвладелец: {f['owner']}" for f in fixes))
+    lessons = (await ask_ai(LEARN_PROMPT, [{"role": "user", "content": "\n\n".join(parts)}])).strip()
+    if lessons:
+        state["lessons"] = lessons
+        state["lessons_at"] = time.time()
+        save_state()
+        log.info("Обновил выводы: %d диалогов, %d правок", len(notes), len(fixes))
+    return f"🧠 Выводы из разговоров:\n{state.get('lessons') or 'пока нет'}"
 
 
 def build_system_prompt(goal: str, name: str, memory: str = "") -> str:
@@ -578,6 +625,8 @@ async def resolve_nudge(nid: str, approve: bool, custom: str = "") -> str:
         n["status"] = "no"
         return "Ок, не пишу"
     text = custom.strip() or n["text"]
+    if custom.strip():
+        remember_owner_text(custom, draft=n["text"])
     await send_text(n["chat_id"], text)
     n["status"] = "sent"
     contact = state["contacts"].get(n["key"])
@@ -614,6 +663,11 @@ async def nudge_loop():
             await check_nudges()
         except Exception:
             log.exception("Не удалось проверить затихшие разговоры")
+        if not state.get("lessons_off") and time.time() - state.get("lessons_at", 0) > 86400:
+            try:
+                await learn()
+            except Exception:
+                log.exception("Не удалось обновить выводы")
 
 
 async def reply_later(chat_id: int, user: User, key: str, now: bool = False, hint: str = ""):
@@ -801,6 +855,7 @@ async def on_group(event):
             sent = await client.send_file(cid, msg.media, caption=text, voice_note=bool(msg.voice))
         else:
             sent = await client.send_message(cid, text)
+            remember_owner_text(text)
         bot_sent_ids.add(sent.id)
     except Exception as e:
         log.exception("Не удалось отправить из группы")
@@ -1035,6 +1090,21 @@ async def handle_command(event):
             state.setdefault("style_examples", []).extend(lines)
             state["style_examples"] = state["style_examples"][-80:]
             out = f"✅ Добавил {len(lines)}, всего примеров: {len(state['style_examples'])}"
+    elif cmd == "/learn":
+        await event.reply("Перечитываю разговоры…")
+        out = await learn()
+    elif cmd == "/lessons":
+        sub = rest.strip().lower()
+        if sub == "clear":
+            for k in ("lessons", "corrections", "lessons_at"):
+                state.pop(k, None)
+            out = "🧹 Выводы и правки стёрты"
+        elif sub in ("off", "on"):
+            state["lessons_off"] = sub == "off"
+            out = "Выводы не учитываю" if sub == "off" else "Снова учитываю выводы"
+        else:
+            out = (f"🧠 Выводы из разговоров:\n{state.get('lessons') or 'пока нет, будут через сутки или по /learn'}"
+                   f"\n\nТвоих правок накоплено: {len(state.get('corrections', []))}")
     elif cmd == "/examples":
         if rest.strip().lower() == "clear":
             state["style_examples"] = []
