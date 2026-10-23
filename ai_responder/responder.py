@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -19,7 +20,8 @@ import httpx
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, utils
 from telethon.tl.functions.channels import (
-    CreateChannelRequest, CreateForumTopicRequest, EditAdminRequest, InviteToChannelRequest)
+    CreateChannelRequest, CreateForumTopicRequest, EditAdminRequest, InviteToChannelRequest,
+    TogglePreHistoryHiddenRequest)
 from telethon.tl.functions.messages import ExportChatInviteRequest
 from telethon.tl.types import ChatAdminRights, MessageActionTopicCreate, UpdateNewChannelMessage, MessageEntityMentionName, MessageEntityTextUrl, MessageEntityUrl, User
 
@@ -47,6 +49,7 @@ SETTINGS = {
     "long_max": (600, "такая поздняя пауза до, сек"),
     "typing_speed": (5, "скорость набора, символов в секунду"),
     "history": (100, "сколько последних сообщений переписки читать перед ответом"),
+    "lock_min": (30, "через сколько минут снова закрыть группу после кодового слова (0 = не закрывать)"),
     "quiet_min": (0, "сколько минут молчать в чате, если ты написал сам (0 = не молчать)"),
     "nudge_after_min": (180, "через сколько минут тишины предложить вопрос (0 = выключено)"),
     "nudge_max": (1, "сколько раз подряд можно напомнить о себе без ответа"),
@@ -81,6 +84,8 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /list — кому бот отвечает
 /reply @username [контекст] — ответить прямо сейчас, сразу отправит. Например /reply @anya предложи субботу в 15
 /nudge @username [контекст] — придумать сообщение прямо сейчас и прислать тебе на согласование
+/lockword слово — задать кодовое слово для группы (сообщение сразу удалится); потом просто пиши это слово, чтобы открыть
+/lock — закрыть группу сейчас (она пропадёт из чатов); /set lock_min 30 — через сколько минут закрывать самой
 /group — создать группу с темой на каждый диалог; /group off — перестать дублировать
 /control @username — присылать всё на твой основной аккаунт и принимать команды оттуда; /control off — обратно в Избранное
 /matchbot @имя — из какого бота знакомств ловить взаимные лайки (сейчас Дайвинчик @leomatchbot)
@@ -507,6 +512,69 @@ async def show_dialog(key: str, contact: dict, n: int):
                                    voice_note=bool(m.voice), video_note=bool(m.video_note))
 
 
+OWNER_RIGHTS = dict(change_info=True, delete_messages=True, ban_users=True, invite_users=True,
+                    pin_messages=True, manage_topics=True)
+lock_task: asyncio.Task | None = None
+
+
+def word_hash(word: str) -> str:
+    return hashlib.sha256(("ai_responder:" + word.strip().lower()).encode()).hexdigest()
+
+
+async def lock_group() -> str:
+    """Убирает тебя из группы — она пропадает из списка чатов, переписка в ней остаётся."""
+    if not group_id() or not control_id():
+        return "Группы нет"
+    owner = await client.get_input_entity(control_id())
+    try:
+        await client(EditAdminRequest(group_id(), owner, ChatAdminRights(), rank=""))
+    except Exception:
+        pass
+    try:
+        await client.kick_participant(group_id(), owner)
+    except Exception as e:
+        log.exception("Не удалось закрыть группу")
+        return f"⚠️ Не смог закрыть группу: {e}"
+    state["group_locked"] = True
+    save_state()
+    return "🔒 Группа закрыта"
+
+
+async def unlock_group() -> str:
+    global lock_task
+    owner = await client.get_input_entity(control_id())
+    try:
+        await client(TogglePreHistoryHiddenRequest(group_id(), enabled=False))  # видна вся история
+    except Exception:
+        pass
+    await client(InviteToChannelRequest(group_id(), [owner]))
+    await client(EditAdminRequest(group_id(), owner, ChatAdminRights(**OWNER_RIGHTS), rank="владелец"))
+    state["group_locked"] = False
+    save_state()
+    if lock_task:
+        lock_task.cancel()
+    minutes = setting("lock_min")
+    if minutes > 0:
+        async def relock():
+            await asyncio.sleep(minutes * 60)
+            await lock_group()
+        lock_task = asyncio.create_task(relock())
+        return f"🔓 Группа открыта на {minutes:g} мин"
+    return "🔓 Группа открыта"
+
+
+async def say_and_vanish(event, text: str, after: int = 30):
+    """Отвечает и через полминуты стирает и свой ответ, и твоё сообщение."""
+    reply = await client.send_message(event.chat_id, nbsp(text))
+    async def vanish():
+        await asyncio.sleep(after)
+        try:
+            await client.delete_messages(event.chat_id, [reply.id], revoke=True)
+        except Exception:
+            pass
+    asyncio.create_task(vanish())
+
+
 async def setup_group() -> str:
     if group_id():
         return "Группа уже есть. Чтобы создать новую: /group off, потом /group"
@@ -521,9 +589,8 @@ async def setup_group() -> str:
     owner = await client.get_input_entity(control_id())
     try:
         await client(InviteToChannelRequest(chan, [owner]))
-        await client(EditAdminRequest(chan, owner, ChatAdminRights(
-            change_info=True, delete_messages=True, ban_users=True, invite_users=True,
-            pin_messages=True, manage_topics=True), rank="владелец"))
+        await client(EditAdminRequest(chan, owner, ChatAdminRights(**OWNER_RIGHTS), rank="владелец"))
+        await client(TogglePreHistoryHiddenRequest(chan, enabled=False))
         joined = "Добавил тебя в группу «Переписки»."
     except Exception:
         log.exception("Не удалось добавить в группу")
@@ -1035,6 +1102,16 @@ async def handle_command(event):
             save_state()
             await event.reply(nbsp(out))
         return
+    if state.get("lock_hash") and text and not text.startswith("/") and word_hash(text) == state["lock_hash"]:
+        try:
+            await client.delete_messages(event.chat_id, [event.id], revoke=True)
+        except Exception:
+            pass
+        if not group_id():
+            await say_and_vanish(event, "Группы ещё нет: /group")
+        else:
+            await say_and_vanish(event, await unlock_group())
+        return
     word = text.lower().strip(" .!")
     if word in YES or word in NO:
         # «да» / «нет» без ответа на сообщение — к последнему предложению
@@ -1139,6 +1216,21 @@ async def handle_command(event):
             out = "✅ Группа отключена, уведомления снова в личку"
         else:
             out = await setup_group()
+    elif cmd == "/lockword":
+        try:
+            await client.delete_messages(event.chat_id, [event.id], revoke=True)
+        except Exception:
+            pass
+        if not rest.strip():
+            await say_and_vanish(event, "Формат: /lockword слово")
+        else:
+            state["lock_hash"] = word_hash(rest)
+            save_state()
+            note = await lock_group() if group_id() else "Группы пока нет, создай её: /group"
+            await say_and_vanish(event, f"✅ Кодовое слово сохранено. {note}. Чтобы открыть, просто напиши это слово")
+        return
+    elif cmd == "/lock":
+        out = await lock_group()
     elif cmd == "/control":
         if key in ("off", "me"):
             state.pop("control_id", None)
