@@ -93,7 +93,8 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /matchgoal текст — цель по умолчанию для новых знакомств оттуда
 /first @username [подсказка] — придумать первое сообщение, например /first @anya познакомились на выставке
 /ok номер, /no номер — согласовать предложенный вопрос (или ответь на него «да» / «нет» / своим текстом)
-/undo @username [сколько] — удалить у обоих последнее сообщение (или несколько), отправленное этому человеку
+/undo @username [сколько] [фото|видео|голосовое|кружок] — удалить у обоих последние твои сообщения этому человеку, можно только определённого типа
+Можно писать и обычными словами, например «в чате с anya удали фото» — бот поймёт и спросит подтверждение
 /show @username [сколько] — прислать тебе последние сообщения переписки (по умолчанию 10), с кружками и голосовыми
 /memory @username — что бот помнит о человеке
 /forget @username — стереть эту память
@@ -588,6 +589,36 @@ async def say_and_vanish(event, text: str, after: int = 30):
         except Exception:
             pass
     asyncio.create_task(vanish())
+
+
+# /undo @user фото — удалить последнее фото (и так для других типов)
+KINDS = {"фото": "photo", "фотку": "photo", "фотографию": "photo", "видео": "video", "голосовое": "voice",
+         "гс": "voice", "кружок": "video_note", "кружочек": "video_note", "стикер": "sticker", "файл": "document"}
+DANGEROUS = {"/undo", "/del", "/forget", "/lessons", "/group", "/off", "/examples", "/control", "/lockmode", "/lock"}
+
+NL_PROMPT = (
+    "Ты переводишь просьбу владельца в одну команду его Telegram-бота. Вот команды:\n{help}\n\n"
+    "Люди в списке: {people}.\n\n"
+    "Верни ровно одну команду в одну строку, начиная с «/», с @username из списка. "
+    "Если просьба не подходит ни под одну команду, верни «НЕТ». Ничего больше не пиши."
+)
+
+
+async def understand(text: str) -> str | None:
+    people = ", ".join(f"@{k} ({c.get('name') or k})" for k, c in state["contacts"].items()) or "пусто"
+    answer = (await ask_ai(NL_PROMPT.format(help=HELP, people=people),
+                           [{"role": "user", "content": text}])).strip().splitlines()[0].strip()
+    return answer if answer.startswith("/") else None
+
+
+class Synthetic:
+    """Команда, которую бот понял из обычной фразы, — выполняется как будто ты её написал."""
+    def __init__(self, event, text):
+        self.raw_text, self.is_reply, self.reply_to_msg_id = text, False, None
+        self.chat_id, self.id, self._event = event.chat_id, event.id, event
+
+    async def reply(self, text):
+        return await self._event.reply(text)
 
 
 async def setup_group() -> str:
@@ -1156,10 +1187,19 @@ async def handle_command(event):
         # «да» / «нет» без ответа на сообщение — к последнему предложению
         waiting = [(n["created"], "nudge", k) for k, n in state.get("nudges", {}).items() if n["status"] == "wait"]
         waiting += [(m["created"], "match", k) for k, m in state.get("matches", {}).items() if m["status"] == "wait"]
+        waiting += [(a["created"], "action", k) for k, a in state.get("actions", {}).items() if a["status"] == "wait"]
         if not waiting:
             await event.reply("Сейчас нечего подтверждать")
             return
         _, kind, k = max(waiting)
+        if kind == "action":
+            action = state["actions"].pop(k)
+            save_state()
+            if word in YES:
+                await handle_command(Synthetic(event, action["cmd"]))
+            else:
+                await event.reply("Ок, не делаю")
+            return
         if kind == "match":
             if word in NO:
                 state["matches"][k]["status"] = "no"
@@ -1173,6 +1213,27 @@ async def handle_command(event):
             await event.reply(nbsp(out))
         return
     if not text.startswith("/"):
+        if not text or isinstance(event, Synthetic):
+            return
+        if state.get("lock_hash") and word_hash(text) == state["lock_hash"]:
+            await client.delete_messages(event.chat_id, [event.id], revoke=True)
+            await say_and_vanish(event, "Замок выключен. Включить: /lockmode on")
+            return
+        try:
+            command = await understand(text)
+        except Exception:
+            log.exception("Не понял фразу")
+            command = None
+        if not command:
+            await event.reply(nbsp("Не понял, что сделать. Напиши иначе или /help"))
+            return
+        if command.split()[0].lower() in DANGEROUS:
+            state.setdefault("actions", {})[str(event.id)] = {"cmd": command, "created": time.time(), "status": "wait"}
+            save_state()
+            await event.reply(f"Понял так: {command}\nВыполнить? Напиши «да» или «нет»")
+        else:
+            await event.reply(f"Понял так: {command}")
+            await handle_command(Synthetic(event, command))
         return
     cmd, rest = (re.split(r"\s", text, maxsplit=1) + [""])[:2]
     cmd = cmd.lower()
@@ -1206,10 +1267,13 @@ async def handle_command(event):
             out = f"Такого нет в списке: @{key or 'username'}"
         else:
             cid = contacts[key]["id"]
-            n = min(int(tail) if tail.strip().isdigit() else 1, 20)
+            words = tail.lower().split()
+            n = min(next((int(w) for w in words if w.isdigit()), 1), 20)
+            kind = next((KINDS[w] for w in words if w in KINDS), None)
             if task := pending.pop(cid, None):
                 task.cancel()  # и не отправлять то, что бот ещё только собирался написать
-            mine = [m for m in await client.get_messages(cid, limit=50) if m.out][:n]
+            mine = [m for m in await client.get_messages(cid, limit=100)
+                    if m.out and (kind is None or getattr(m, kind, None))][:n]
             if not mine:
                 out = f"Нечего удалять: в чате с @{key} нет твоих сообщений"
             else:
