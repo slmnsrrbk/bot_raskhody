@@ -31,6 +31,7 @@ jobs:
       TG_API_HASH: ${{ secrets.TG_API_HASH }}
       TG_PHONE: ${{ secrets.TG_PHONE }}
       TG_2FA_PASSWORD: ${{ secrets.TG_2FA_PASSWORD }}
+      TG_CONTROL_USER: ${{ secrets.TG_CONTROL_USER }}
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_MODEL: ${{ vars.AI_MODEL }}
       LOGIN_CODE: ${{ inputs.code }}
@@ -118,6 +119,8 @@ jobs:
           for k in ["TG_API_ID", "TG_API_HASH", "TG_PHONE", "TG_2FA_PASSWORD"]:
               if os.environ.get(k):
                   env[k] = os.environ[k]
+          if e.get("TG_CONTROL_USER"):
+              env["CONTROL_USER"] = e["TG_CONTROL_USER"]
           for k, v in env.items():
               print(k + '="' + v.replace("\\", "\\\\").replace('"', '\\"') + '"')
           PY
