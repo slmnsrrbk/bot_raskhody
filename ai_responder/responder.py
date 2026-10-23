@@ -27,6 +27,9 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "chadgpt")
 AI_API_KEY = os.environ["AI_API_KEY"]
 AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+AI_STT_MODEL = os.getenv("AI_STT_MODEL", "openai/gpt-4o-mini-transcribe")
+# основной аккаунт, с которого ты управляешь ботом (по умолчанию — Избранное)
+CONTROL_USER = os.getenv("CONTROL_USER", "").strip().lstrip("@")
 DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "8"))
 # всё, что меняется командой /set: ключ -> (по умолчанию, описание)
 SETTINGS = {
@@ -73,6 +76,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /list — кому бот отвечает
 /reply @username [контекст] — ответить прямо сейчас, сразу отправит. Например /reply @anya предложи субботу в 15
 /nudge @username [контекст] — придумать сообщение прямо сейчас и прислать тебе на согласование
+/control @username — присылать всё на твой основной аккаунт и принимать команды оттуда; /control off — обратно в Избранное
 /matchbot @имя — из какого бота знакомств ловить взаимные лайки (сейчас Дайвинчик @leomatchbot)
 /matchgoal текст — цель по умолчанию для новых знакомств оттуда
 /first @username [подсказка] — придумать первое сообщение, например /first @anya познакомились на выставке
@@ -319,12 +323,54 @@ def describe(msg) -> str:
     return "[сообщение]"
 
 
+def control_id() -> int | None:
+    return state.get("control_id")
+
+
+async def notify(text: str):
+    """Пишет тебе: на основной аккаунт, если он задан, иначе в Избранное."""
+    return await client.send_message(control_id() or "me", text)
+
+
+async def transcribe(msg) -> str | None:
+    """Голосовое → текст через Polza (OpenAI-совместимый /audio/transcriptions)."""
+    if AI_PROVIDER != "openai" or not msg.voice:
+        return None
+    cache = state.setdefault("voices", {})
+    key = f"{msg.chat_id}:{msg.id}"
+    if key in cache:
+        return cache[key]
+    try:
+        audio = await client.download_media(msg, bytes)
+        async with httpx.AsyncClient(timeout=90) as http:
+            r = await http.post(
+                f"{AI_BASE_URL}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {AI_API_KEY}"},
+                files={"file": ("voice.ogg", audio, "audio/ogg")},
+                data={"model": AI_STT_MODEL, "language": "ru", "response_format": "json"},
+            )
+        r.raise_for_status()
+        text = (r.json().get("text") or "").strip()
+    except Exception:
+        log.exception("Не удалось распознать голосовое")
+        return None
+    if text:
+        cache[key] = text
+        if len(cache) > 500:
+            for old in list(cache)[:100]:
+                cache.pop(old)
+        save_state()
+    return text or None
+
+
 async def load_history(chat_id: int) -> list[dict]:
     msgs = await client.get_messages(chat_id, limit=HISTORY_LIMIT)
     history = []
     for m in reversed(msgs):
         role = "assistant" if m.out else "user"
         content = describe(m)
+        if m.voice and (heard := await transcribe(m)):
+            content = f"[голосовое] {heard}"
         if history and history[-1]["role"] == role:
             history[-1]["content"] += "\n" + content
         else:
@@ -391,7 +437,7 @@ async def offer(key: str, cid: int, text: str, last_id: int, headline: str):
     head = nbsp(f"💬 №{nid}. {headline}")
     tail = nbsp(f"Ответь на это сообщение: «да» отправлю, «нет» не надо, или пришли свой вариант. "
                 f"Ещё можно /ok {nid} или /no {nid}")
-    sent = await client.send_message("me", f"{head}\n\n{text}\n\n{tail}")
+    sent = await notify(f"{head}\n\n{text}\n\n{tail}")
     state.setdefault("nudges", {})[nid] = dict(
         key=key, chat_id=cid, text=text, msg_id=sent.id, last_id=last_id, status="wait", created=time.time())
     save_state()
@@ -502,8 +548,7 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False, hin
             return
 
         if HANDOFF in answer:
-            await client.send_message(
-                "me",
+            await notify(
                 nbsp(f"⚠️ Нужен ты: @{user.username or user.id} ждёт ответа. "
                 "Последнее сообщение:\n") + history[-1]["content"],
             )
@@ -568,7 +613,7 @@ async def on_match(event):
     head = nbsp(f"❤️ Взаимный лайк: {who} ({handle}).")
     tail = nbsp("Ответь на это сообщение «да», и я добавлю человека и предложу первое сообщение. "
                 "Можно ответить своей целью вместо «да». «Нет», если не интересно.")
-    sent = await client.send_message("me", f"{head}\n\n{tail}")
+    sent = await notify(f"{head}\n\n{tail}")
     state.setdefault("matches", {})[str(sent.id)] = dict(
         user_id=person.id, username=person.username, name=who, status="wait", created=time.time())
     save_state()
@@ -593,9 +638,12 @@ async def accept_match(mid: str, goal: str) -> str | None:
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def on_incoming(event):
+    user = await event.get_sender()
+    if control_id() and event.chat_id == control_id():
+        await handle_command(event)  # пишешь с основного аккаунта — это команды
+        return
     if not state["enabled"]:
         return
-    user = await event.get_sender()
     if not isinstance(user, User) or user.bot:
         return
     key, contact = contact_for(user)
@@ -621,7 +669,7 @@ async def on_outgoing(event):
     if event.chat_id == me.id:
         await handle_command(event)
         return
-    if event.id in bot_sent_ids or event.chat_id in bot_sending:
+    if event.id in bot_sent_ids or event.chat_id in bot_sending or event.chat_id == control_id():
         return
     # ты написал сам — бот не перебивает
     if setting("quiet_min") > 0:
@@ -707,6 +755,20 @@ async def handle_command(event):
             out = await propose_nudge(key, contacts[key], force=True, hint=tail.strip())
             if out is None:
                 return
+    elif cmd == "/control":
+        if key in ("off", "me"):
+            state.pop("control_id", None)
+            out = "✅ Управление снова через Избранное"
+        elif key:
+            try:
+                ent = await client.get_entity(int(key) if key.isdigit() else key)
+                state["control_id"] = ent.id
+                out = f"✅ Управление теперь с @{key}"
+                await client.send_message(ent.id, "Привет, теперь я пишу сюда. Команды присылай в этот чат, начни с /help")
+            except Exception:
+                out = f"⚠️ Не нашёл @{key} в Telegram"
+        else:
+            out = f"Сейчас управление: {'основной аккаунт, id ' + str(control_id()) if control_id() else 'Избранное'}"
     elif cmd == "/matchbot":
         if key:
             state["match_bots"] = [key]
@@ -866,6 +928,13 @@ async def main():
         await client.start()
     me = await client.get_me()
     log.info("Вошёл как @%s. Команды — в Избранном, начни с /help", me.username)
+    if CONTROL_USER and not control_id():
+        try:
+            state["control_id"] = (await client.get_entity(CONTROL_USER)).id
+            save_state()
+            await notify("Привет, теперь я пишу сюда. Команды присылай в этот чат, начни с /help")
+        except Exception:
+            log.warning("Не нашёл основной аккаунт @%s", CONTROL_USER)
     await catch_up()
     asyncio.create_task(nudge_loop())
     await client.run_until_disconnected()
