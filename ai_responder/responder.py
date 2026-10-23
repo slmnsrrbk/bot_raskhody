@@ -469,8 +469,19 @@ async def topic_for(key: str, contact: dict) -> int | None:
     return contact.get("topic")
 
 
-async def mirror(key: str, contact: dict, text: str, media_msg=None):
-    """Дублирует сообщение в тему человека; без группы кружки, голосовые и фото идут тебе в личку."""
+def link_copy(copy_id: int, chat_id: int, msg_id: int, ours: bool):
+    """Запоминает: сообщение copy_id в группе — это сообщение msg_id в чате с человеком."""
+    links = state.setdefault("relay", {})
+    links[str(copy_id)] = [chat_id, msg_id, ours]
+    if len(links) > 3000:
+        for old in list(links)[:500]:
+            links.pop(old)
+    save_state()
+
+
+async def mirror(key: str, contact: dict, text: str, media_msg=None, orig: tuple | None = None):
+    """Дублирует сообщение в тему человека; без группы кружки, голосовые и фото идут тебе в личку.
+    orig = (id в чате, наше ли) — чтобы удаление в группе удаляло и в чате."""
     tid = await topic_for(key, contact)
     has_media = media_msg is not None and media_msg.media and not media_msg.web_preview
     if tid:
@@ -482,13 +493,16 @@ async def mirror(key: str, contact: dict, text: str, media_msg=None):
     try:
         if has_media:
             caption = "" if media_msg.video_note else text[:1000]
-            await client.send_file(target, media_msg.media, caption=caption, reply_to=tid,
-                                   voice_note=bool(media_msg.voice), video_note=bool(media_msg.video_note))
+            copies = [await client.send_file(target, media_msg.media, caption=caption, reply_to=tid,
+                                             voice_note=bool(media_msg.voice), video_note=bool(media_msg.video_note))]
             if media_msg.video_note and text:
                 # у кружков нет подписи — расшифровку присылаем отдельным сообщением
-                await client.send_message(target, text, reply_to=tid)
+                copies.append(await client.send_message(target, text, reply_to=tid))
         else:
-            await client.send_message(target, text, reply_to=tid)
+            copies = [await client.send_message(target, text, reply_to=tid)]
+        if orig and target == group_id():
+            for c in copies:
+                link_copy(c.id, contact["id"], orig[0], orig[1])
     except Exception:
         log.exception("Не удалось продублировать в группу")
 
@@ -721,7 +735,7 @@ async def send_text(chat_id: int, text: str, forced: bool = False, by_owner: boo
             bot_sending.discard(chat_id)
         key, contact = contact_by_id(chat_id)
         if contact:
-            await mirror(key, contact, f"🤖 {part}")
+            await mirror(key, contact, f"🤖 {part}", orig=(sent.id, True))
     last_reply[chat_id] = time.time()
     return True
 
@@ -999,7 +1013,8 @@ async def on_incoming(event):
         text = msg.raw_text or ""
         if (msg.voice or msg.video_note) and (heard := await transcribe(msg)):
             text = f"{'🎤' if msg.voice else '🎥'} {heard}"
-        await mirror(key, contact, f"{name}: {text}" if text else name, msg if msg.media else None)
+        await mirror(key, contact, f"{name}: {text}" if text else name, msg if msg.media else None,
+                     orig=(msg.id, False))
     if not state["enabled"]:
         return
     if contact.get("paused_until", 0) > time.time():
@@ -1049,6 +1064,7 @@ async def on_group(event):
             sent = await client.send_message(cid, text)
             remember_owner_text(text)
         bot_sent_ids.add(sent.id)
+        link_copy(event.id, cid, sent.id, True)
     except Exception as e:
         log.exception("Не удалось отправить из группы")
         await event.reply(f"⚠️ Не отправилось: {e}")
@@ -1057,6 +1073,26 @@ async def on_group(event):
     last_reply[cid] = time.time()
     if setting("quiet_min") > 0:
         takeover_until[cid] = time.time() + setting("quiet_min") * 60
+
+
+@client.on(events.MessageDeleted())
+async def on_group_delete(event):
+    """Удалил сообщение в теме — удаляем его и в чате с человеком."""
+    if not group_id() or event.chat_id != group_id():
+        return
+    links = state.get("relay", {})
+    for gid in event.deleted_ids:
+        link = links.pop(str(gid), None)
+        if not link:
+            continue
+        chat_id, msg_id, ours = link
+        try:
+            # своё удаляем у обоих, её сообщение — только у нас
+            await client.delete_messages(chat_id, [msg_id], revoke=ours)
+            log.info("Удалил в чате %s сообщение %s (у обоих: %s)", chat_id, msg_id, ours)
+        except Exception:
+            log.exception("Не удалось удалить в чате")
+    save_state()
 
 
 @client.on(events.NewMessage(outgoing=True, func=lambda e: e.is_private))
@@ -1068,7 +1104,8 @@ async def on_outgoing(event):
         return
     key, contact = contact_by_id(event.chat_id)
     if contact:
-        await mirror(key, contact, f"✍️ {event.raw_text or ''}", event.message if event.message.media else None)
+        await mirror(key, contact, f"✍️ {event.raw_text or ''}", event.message if event.message.media else None,
+                     orig=(event.id, True))
     # ты написал сам — бот не перебивает
     if setting("quiet_min") > 0:
         takeover_until[event.chat_id] = time.time() + setting("quiet_min") * 60
