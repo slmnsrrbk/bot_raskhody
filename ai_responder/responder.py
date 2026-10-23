@@ -598,13 +598,26 @@ async def load_history(chat_id: int) -> list[dict]:
     return history
 
 
-async def send_text(chat_id: int, text: str):
-    """Отправляет от твоего имени: «печатает…», затем сообщение (или 2–3 подряд)."""
+async def you_wrote_last(chat_id: int, first: bool) -> bool:
+    """Последнее сообщение в чате — твоё (а не бота)? Тогда поверх ничего не пишем."""
+    msgs = await client.get_messages(chat_id, limit=1)
+    if not msgs or not msgs[0].out:
+        return False
+    # перед первым сообщением последним должен быть собеседник; дальше — наша же предыдущая часть
+    return first or msgs[0].id not in bot_sent_ids
+
+
+async def send_text(chat_id: int, text: str, forced: bool = False) -> bool:
+    """Отправляет от твоего имени: «печатает…», затем сообщение (или 2–3 подряд).
+    Не пишет поверх тебя: если последним в чате стало твоё сообщение, останавливается."""
     for i, part in enumerate(split_parts(text)):
         if i:
             await asyncio.sleep(random.uniform(1, 4))
         async with client.action(chat_id, "typing"):
             await asyncio.sleep(typing_seconds(part))
+        if (i or not forced) and await you_wrote_last(chat_id, first=not i):
+            log.info("Не отправляю в %s: последним написал ты", chat_id)
+            return i > 0
         bot_sending.add(chat_id)
         try:
             sent = await client.send_message(chat_id, part)
@@ -615,6 +628,7 @@ async def send_text(chat_id: int, text: str):
         if contact:
             await mirror(key, contact, f"🤖 {part}")
     last_reply[chat_id] = time.time()
+    return True
 
 
 NUDGE_PROMPT = (
@@ -704,7 +718,7 @@ async def resolve_nudge(nid: str, approve: bool, custom: str = "") -> str:
     text = custom.strip() or n["text"]
     if custom.strip():
         remember_owner_text(custom, draft=n["text"])
-    await send_text(n["chat_id"], text)
+    await send_text(n["chat_id"], text, forced=True)
     n["status"] = "sent"
     contact = state["contacts"].get(n["key"])
     if contact:
@@ -784,7 +798,8 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False, hin
             )
             return
 
-        await send_text(chat_id, answer)
+        if not await send_text(chat_id, answer, forced=now):
+            return
         log.info("Ответил %s: %s", key, answer[:80])
         history.append({"role": "assistant", "content": answer})
         real = [m for m in history if not m["content"].startswith("[служебно")]
