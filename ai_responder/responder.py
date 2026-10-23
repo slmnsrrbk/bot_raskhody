@@ -16,8 +16,11 @@ import time
 
 import httpx
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
-from telethon.tl.types import MessageEntityMentionName, MessageEntityTextUrl, MessageEntityUrl, User
+from telethon import TelegramClient, events, utils
+from telethon.tl.functions.channels import (
+    CreateChannelRequest, CreateForumTopicRequest, EditAdminRequest, InviteToChannelRequest)
+from telethon.tl.functions.messages import ExportChatInviteRequest
+from telethon.tl.types import ChatAdminRights, MessageActionTopicCreate, UpdateNewChannelMessage, MessageEntityMentionName, MessageEntityTextUrl, MessageEntityUrl, User
 
 load_dotenv(os.getenv("ENV_FILE", ".env"))
 
@@ -76,6 +79,7 @@ HELP = """Команды (пиши их здесь, в Избранном):
 /list — кому бот отвечает
 /reply @username [контекст] — ответить прямо сейчас, сразу отправит. Например /reply @anya предложи субботу в 15
 /nudge @username [контекст] — придумать сообщение прямо сейчас и прислать тебе на согласование
+/group — создать группу с темой на каждый диалог; /group off — перестать дублировать
 /control @username — присылать всё на твой основной аккаунт и принимать команды оттуда; /control off — обратно в Избранное
 /matchbot @имя — из какого бота знакомств ловить взаимные лайки (сейчас Дайвинчик @leomatchbot)
 /matchgoal текст — цель по умолчанию для новых знакомств оттуда
@@ -327,9 +331,101 @@ def control_id() -> int | None:
     return state.get("control_id")
 
 
-async def notify(text: str):
-    """Пишет тебе: на основной аккаунт, если он задан, иначе в Избранное."""
+def group_id() -> int | None:
+    return state.get("group_id")
+
+
+async def notify(text: str, key: str | None = None):
+    """Пишет тебе: в тему человека в группе, в общую тему, на основной аккаунт или в Избранное."""
+    if group_id():
+        contact = state["contacts"].get(key) if key else None
+        tid = await topic_for(key, contact) if contact else None
+        try:
+            return await client.send_message(group_id(), text, reply_to=tid)
+        except Exception:
+            log.exception("Не удалось написать в группу")
     return await client.send_message(control_id() or "me", text)
+
+
+def contact_by_id(uid: int):
+    for k, c in state["contacts"].items():
+        if c.get("id") == uid:
+            return k, c
+    return None, None
+
+
+def contact_by_topic(tid: int):
+    for k, c in state["contacts"].items():
+        if c.get("topic") == tid:
+            return k, c
+    return None, None
+
+
+async def topic_for(key: str, contact: dict) -> int | None:
+    """Тема в группе для этого человека; создаёт её при первом сообщении."""
+    if not group_id() or not contact:
+        return None
+    if contact.get("topic"):
+        return contact["topic"]
+    title = f"{contact.get('name') or key} (@{key})"[:120]
+    res = await client(CreateForumTopicRequest(channel=group_id(), title=title, random_id=random.getrandbits(62)))
+    for u in res.updates:
+        if isinstance(u, UpdateNewChannelMessage) and isinstance(u.message.action, MessageActionTopicCreate):
+            contact["topic"] = u.message.id
+    save_state()
+    if contact.get("topic"):
+        intro = f"Цель: {contact['goal']}"
+        if contact.get("memory"):
+            intro += f"\n\nЧто бот уже знает:\n{contact['memory']}"
+        await client.send_message(group_id(), intro, reply_to=contact["topic"])
+    return contact.get("topic")
+
+
+async def mirror(key: str, contact: dict, text: str, media_msg=None):
+    """Дублирует сообщение в тему человека в группе."""
+    tid = await topic_for(key, contact)
+    if not tid:
+        return
+    try:
+        if media_msg is not None and media_msg.media and not media_msg.web_preview:
+            await client.send_file(group_id(), media_msg.media, caption=text[:1000], reply_to=tid,
+                                   voice_note=bool(media_msg.voice))
+        else:
+            await client.send_message(group_id(), text, reply_to=tid)
+    except Exception:
+        log.exception("Не удалось продублировать в группу")
+
+
+async def setup_group() -> str:
+    if group_id():
+        return "Группа уже есть. Чтобы создать новую: /group off, потом /group"
+    if not control_id():
+        return "Сначала задай основной аккаунт: /control @username"
+    res = await client(CreateChannelRequest(
+        title="Переписки", about="Каждая тема — диалог. Пиши в тему, и сообщение уйдёт человеку.",
+        megagroup=True, forum=True))
+    chan = res.chats[0]
+    state["group_id"] = utils.get_peer_id(chan)
+    save_state()
+    owner = await client.get_input_entity(control_id())
+    try:
+        await client(InviteToChannelRequest(chan, [owner]))
+        await client(EditAdminRequest(chan, owner, ChatAdminRights(
+            change_info=True, delete_messages=True, ban_users=True, invite_users=True,
+            pin_messages=True, manage_topics=True), rank="владелец"))
+        joined = "Добавил тебя в группу «Переписки»."
+    except Exception:
+        log.exception("Не удалось добавить в группу")
+        link = (await client(ExportChatInviteRequest(chan))).link
+        joined = f"Не смог добавить тебя сам, вот ссылка на группу «Переписки»: {link}"
+    for k, c in state["contacts"].items():
+        if c.get("id"):
+            c.pop("topic", None)
+            await topic_for(k, c)
+    await client.send_message(group_id(), nbsp(
+        "Здесь общая тема: сюда приходят команды и уведомления. У каждого человека своя тема. "
+        "Пиши в неё текстом или голосовым, и это уйдёт ему от имени аккаунта. Ответы бота помечены 🤖"))
+    return joined
 
 
 async def transcribe(msg) -> str | None:
@@ -391,6 +487,9 @@ async def send_text(chat_id: int, text: str):
             bot_sent_ids.add(sent.id)
         finally:
             bot_sending.discard(chat_id)
+        key, contact = contact_by_id(chat_id)
+        if contact:
+            await mirror(key, contact, f"🤖 {part}")
     last_reply[chat_id] = time.time()
 
 
@@ -437,7 +536,7 @@ async def offer(key: str, cid: int, text: str, last_id: int, headline: str):
     head = nbsp(f"💬 №{nid}. {headline}")
     tail = nbsp(f"Ответь на это сообщение: «да» отправлю, «нет» не надо, или пришли свой вариант. "
                 f"Ещё можно /ok {nid} или /no {nid}")
-    sent = await notify(f"{head}\n\n{text}\n\n{tail}")
+    sent = await notify(f"{head}\n\n{text}\n\n{tail}", key=key)
     state.setdefault("nudges", {})[nid] = dict(
         key=key, chat_id=cid, text=text, msg_id=sent.id, last_id=last_id, status="wait", created=time.time())
     save_state()
@@ -548,7 +647,7 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False, hin
             return
 
         if HANDOFF in answer:
-            await notify(
+            await notify(key=key, text=
                 nbsp(f"⚠️ Нужен ты: @{user.username or user.id} ждёт ответа. "
                 "Последнее сообщение:\n") + history[-1]["content"],
             )
@@ -642,12 +741,21 @@ async def on_incoming(event):
     if control_id() and event.chat_id == control_id():
         await handle_command(event)  # пишешь с основного аккаунта — это команды
         return
-    if not state["enabled"]:
-        return
     if not isinstance(user, User) or user.bot:
         return
     key, contact = contact_for(user)
     if not contact:
+        return
+    name = " ".join(filter(None, [user.first_name, user.last_name])) or key
+    if contact.get("name") != name:
+        contact["name"] = name
+    if group_id():
+        msg = event.message
+        text = msg.raw_text or ""
+        if msg.voice and (heard := await transcribe(msg)):
+            text = f"🎤 {heard}"
+        await mirror(key, contact, f"{name}: {text}" if text else name, msg if msg.media else None)
+    if not state["enabled"]:
         return
     if contact.get("paused_until", 0) > time.time():
         log.info("Пропускаю %s: на паузе", key)
@@ -664,6 +772,46 @@ async def on_incoming(event):
         pending[event.chat_id] = asyncio.create_task(reply_later(event.chat_id, user, key))
 
 
+def is_proposal(mid) -> bool:
+    return str(mid) in state.get("matches", {}) or any(
+        n["msg_id"] == mid for n in state.get("nudges", {}).values())
+
+
+@client.on(events.NewMessage(incoming=True, func=lambda e: bool(group_id()) and e.chat_id == group_id()))
+async def on_group(event):
+    """Пишешь в тему — сообщение уходит человеку от имени аккаунта."""
+    if event.sender_id != control_id():
+        return
+    text = event.raw_text or ""
+    rt = event.message.reply_to
+    tid = (rt.reply_to_top_id or rt.reply_to_msg_id) if rt and rt.forum_topic else None
+    if text.startswith("/") or not tid or (rt and is_proposal(rt.reply_to_msg_id)):
+        await handle_command(event)
+        return
+    key, contact = contact_by_topic(tid)
+    if not contact or not contact.get("id"):
+        return
+    cid = contact["id"]
+    if task := pending.pop(cid, None):
+        task.cancel()  # ты отвечаешь сам — бот не дублирует
+    bot_sending.add(cid)
+    try:
+        msg = event.message
+        if msg.media and not msg.web_preview:
+            sent = await client.send_file(cid, msg.media, caption=text, voice_note=bool(msg.voice))
+        else:
+            sent = await client.send_message(cid, text)
+        bot_sent_ids.add(sent.id)
+    except Exception as e:
+        log.exception("Не удалось отправить из группы")
+        await event.reply(f"⚠️ Не отправилось: {e}")
+    finally:
+        bot_sending.discard(cid)
+    last_reply[cid] = time.time()
+    if setting("quiet_min") > 0:
+        takeover_until[cid] = time.time() + setting("quiet_min") * 60
+
+
 @client.on(events.NewMessage(outgoing=True, func=lambda e: e.is_private))
 async def on_outgoing(event):
     if event.chat_id == me.id:
@@ -671,6 +819,9 @@ async def on_outgoing(event):
         return
     if event.id in bot_sent_ids or event.chat_id in bot_sending or event.chat_id == control_id():
         return
+    key, contact = contact_by_id(event.chat_id)
+    if contact:
+        await mirror(key, contact, f"✍️ {event.raw_text or ''}", event.message if event.message.media else None)
     # ты написал сам — бот не перебивает
     if setting("quiet_min") > 0:
         takeover_until[event.chat_id] = time.time() + setting("quiet_min") * 60
@@ -727,7 +878,10 @@ async def handle_command(event):
                 contacts[key]["id"] = ent.id
                 takeover_until.pop(ent.id, None)
                 who = " ".join(filter(None, [ent.first_name, ent.last_name]))
+                contacts[key]["name"] = who or key
                 out = f"✅ @{key} ({who}): {tail.strip()}"
+                if group_id():
+                    await topic_for(key, contacts[key])
             except Exception:
                 out = (f"⚠️ Добавил @{key}, но в Telegram такого не нашёл. "
                        "Нужен именно @username из профиля человека, не имя. Если ошибся, /del и добавь заново")
@@ -755,6 +909,14 @@ async def handle_command(event):
             out = await propose_nudge(key, contacts[key], force=True, hint=tail.strip())
             if out is None:
                 return
+    elif cmd == "/group":
+        if key == "off":
+            state.pop("group_id", None)
+            for c in contacts.values():
+                c.pop("topic", None)
+            out = "✅ Группа отключена, уведомления снова в личку"
+        else:
+            out = await setup_group()
     elif cmd == "/control":
         if key in ("off", "me"):
             state.pop("control_id", None)
