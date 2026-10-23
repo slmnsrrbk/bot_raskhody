@@ -409,7 +409,9 @@ def group_id() -> int | None:
 
 
 async def notify(text: str, key: str | None = None):
-    """Пишет тебе: в тему человека в группе, в общую тему, на основной аккаунт или в Избранное."""
+    """Пишет тебе: в личку на основной аккаунт; без него — в группу или в Избранное."""
+    if control_id():
+        return await client.send_message(control_id(), text)
     if group_id():
         contact = state["contacts"].get(key) if key else None
         tid = await topic_for(key, contact) if contact else None
@@ -655,8 +657,8 @@ async def offer(key: str, cid: int, text: str, last_id: int, headline: str):
     state["nudge_seq"] = state.get("nudge_seq", 0) + 1
     nid = str(state["nudge_seq"])
     head = nbsp(f"💬 №{nid}. {headline}")
-    tail = nbsp(f"Ответь на это сообщение: «да» отправлю, «нет» не надо, или пришли свой вариант. "
-                f"Ещё можно /ok {nid} или /no {nid}")
+    tail = nbsp(f"Напиши «да», чтобы отправить, или «нет». Свой вариант — ответом на это сообщение. "
+                f"Если предложений несколько: /ok {nid} или /no {nid}")
     sent = await notify(f"{head}\n\n{text}\n\n{tail}", key=key)
     state.setdefault("nudges", {})[nid] = dict(
         key=key, chat_id=cid, text=text, msg_id=sent.id, last_id=last_id, status="wait", created=time.time())
@@ -988,6 +990,27 @@ async def handle_command(event):
             else:
                 out = await resolve_nudge(nid, True, custom=text)
             save_state()
+            await event.reply(nbsp(out))
+        return
+    word = text.lower().strip(" .!")
+    if word in YES or word in NO:
+        # «да» / «нет» без ответа на сообщение — к последнему предложению
+        waiting = [(n["created"], "nudge", k) for k, n in state.get("nudges", {}).items() if n["status"] == "wait"]
+        waiting += [(m["created"], "match", k) for k, m in state.get("matches", {}).items() if m["status"] == "wait"]
+        if not waiting:
+            await event.reply("Сейчас нечего подтверждать")
+            return
+        _, kind, k = max(waiting)
+        if kind == "match":
+            if word in NO:
+                state["matches"][k]["status"] = "no"
+                out = "Ок, пропускаю"
+            else:
+                out = await accept_match(k, "")
+        else:
+            out = await resolve_nudge(k, word in YES)
+        save_state()
+        if out:
             await event.reply(nbsp(out))
         return
     if not text.startswith("/"):
