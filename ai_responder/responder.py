@@ -175,8 +175,25 @@ INTERJECTION = re.compile(
     re.IGNORECASE)
 
 
+THOUGHT_TAGS = r"(?:reasoning|think|thinking|thought|analysis|scratchpad)"
+LEAK = re.compile(r"</?\w+>|\[служебно|\[\[|HANDOFF|написал владелец сам|\bassistant\s*:|\buser\s*:", re.IGNORECASE)
+
+
+def strip_thoughts(text: str) -> str:
+    """Модели иногда кладут свои рассуждения прямо в ответ — вырезаем их."""
+    text = re.sub(rf"<{THOUGHT_TAGS}>.*?</{THOUGHT_TAGS}>", "", text, flags=re.S | re.I)
+    if re.search(rf"<{THOUGHT_TAGS}>", text, re.I):
+        return ""  # рассуждение без конца — ответа в нём нет, отправлять нечего
+    return text
+
+
+def looks_technical(text: str) -> bool:
+    return bool(LEAK.search(text))
+
+
 def clean_reply(text: str) -> str:
-    """Чистит ответ: смайлики, показное удивление, лишние восклицательные знаки."""
+    """Чистит ответ: рассуждения модели, смайлики, показное удивление, лишние восклицательные знаки."""
+    text = strip_thoughts(text)
     text = re.sub(r"^\s*\[(сегодня|вчера|\d\d\.\d\d), \d\d:\d\d\]\s*", "", text)
     text = re.sub(r"^\s*\(в ответ на «[^»]*»\)\s*", "", text)
     text = re.sub(r"\(написал владелец сам\)\s*", "", text)
@@ -994,9 +1011,16 @@ async def reply_later(chat_id: int, user: User, key: str, now: bool = False, hin
             history.append({"role": "user", "content": "[служебно: напиши следующее сообщение сам, продолжи разговор]"})
         await client.send_read_acknowledge(chat_id)
         await asyncio.sleep(random.uniform(2, 8))  # прочитал, думает
-        answer = clean_reply(await ask_ai(system, history))
-        if not answer:
+        raw = await ask_ai(system, history)
+        answer = clean_reply(raw)
+        if HANDOFF not in raw and (not answer or looks_technical(answer)):
+            # последняя проверка: служебный текст собеседнику не уходит
+            log.warning("Не отправил %s служебный ответ: %s", key, raw[:200])
+            await notify(nbsp(f"⚠️ Модель выдала служебный текст вместо ответа @{key}, я его не отправил. "
+                              f"Ответь сам или /reply @{key}"), key=key)
             return
+        if HANDOFF in raw:
+            answer = HANDOFF
 
         if HANDOFF in answer:
             await notify(key=key, text=
@@ -1585,6 +1609,29 @@ async def handle_command(event):
     await event.reply(nbsp(out))
 
 
+async def clean_leaked_thoughts():
+    """Один раз: удаляет у обоих уже отправленные сообщения, в которые попали рассуждения модели."""
+    if state.get("thoughts_cleaned"):
+        return
+    found = []
+    for key, c in state["contacts"].items():
+        if not c.get("id"):
+            continue
+        try:
+            bad = [m.id for m in await client.get_messages(c["id"], limit=100)
+                   if m.out and m.raw_text and re.search(rf"<{THOUGHT_TAGS}>", m.raw_text, re.I)]
+            if bad:
+                await client.delete_messages(c["id"], bad, revoke=True)
+                found.append(f"@{key}: {len(bad)}")
+        except Exception:
+            log.exception("Не удалось почистить чат @%s", key)
+    state["thoughts_cleaned"] = True
+    save_state()
+    if found:
+        log.info("Удалил сообщения с рассуждениями: %s", ", ".join(found))
+        await notify(nbsp("🧹 Удалил у обоих сообщения, в которые попали рассуждения модели: " + ", ".join(found)))
+
+
 async def catch_up():
     """После перезапуска отвечаем тем, чьи сообщения остались без ответа."""
     for k, c in state["contacts"].items():
@@ -1630,6 +1677,7 @@ async def main():
         except Exception:
             log.exception("Не удалось вернуть тебя в группу")
     save_state()
+    await clean_leaked_thoughts()
     await catch_up()
     asyncio.create_task(nudge_loop())
     await client.run_until_disconnected()
