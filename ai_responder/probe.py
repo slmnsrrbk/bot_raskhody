@@ -11,7 +11,7 @@ key = os.environ["AI_API_KEY"]
 for model in sys.argv[1:]:
     try:
         r = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"}, timeout=60,
-                       json={"model": model, "max_tokens": 5, "messages": [{"role": "user", "content": "привет"}]})
+                       json={"model": model, "max_tokens": 20, "temperature": 0.7, "messages": [{"role": "user", "content": "привет"}]})
         detail = "" if r.status_code == 200 else " " + r.text[:150].replace("\n", " ")
         print(f"{model}: {r.status_code}{detail}")
     except Exception as e:
