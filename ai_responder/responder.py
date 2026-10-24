@@ -35,7 +35,9 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "chadgpt")
 AI_API_KEY = os.environ["AI_API_KEY"]
 AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-AI_FALLBACK_MODEL = os.getenv("AI_FALLBACK_MODEL", "anthropic/claude-haiku-5.5")
+# если основная модель недоступна — по очереди пробуем эти (разные провайдеры, чтобы сбой одного не мешал)
+AI_FALLBACK_MODELS = [m.strip() for m in os.getenv(
+    "AI_FALLBACK_MODELS", "openai/gpt-5.5,x-ai/grok-4.7,openai/gpt-4.1-mini").split(",") if m.strip()]
 AI_STT_MODEL = os.getenv("AI_STT_MODEL", "openai/gpt-4o-mini-transcribe")
 # основной аккаунт, с которого ты управляешь ботом (по умолчанию — Избранное)
 CONTROL_USER = os.getenv("CONTROL_USER", "").strip().lstrip("@")
@@ -320,11 +322,11 @@ async def update_memory(key: str, goal: str, history: list[dict]):
 async def ask_ai(system: str, history: list[dict]) -> str:
     async with httpx.AsyncClient(timeout=60) as http:
         if AI_PROVIDER == "openai":
-            models = [state.get("model") or AI_MODEL, AI_FALLBACK_MODEL]
+            main = state.get("model") or AI_MODEL
+            # основную модель — дважды (бывают секундные сбои), потом запасные по одному разу
+            chain = [main, main] + [m for m in AI_FALLBACK_MODELS if m != main]
             last_error = None
-            for attempt in range(4):
-                # сервис иногда отвечает 5xx — ждём и пробуем снова, в конце запасной моделью
-                model = models[1] if attempt == 3 and models[1] else models[0]
+            for attempt, model in enumerate(chain):
                 try:
                     r = await http.post(
                         f"{AI_BASE_URL}/chat/completions",
@@ -337,12 +339,14 @@ async def ask_ai(system: str, history: list[dict]) -> str:
                     )
                     if r.status_code < 500 and r.status_code != 429:
                         r.raise_for_status()
+                        if model != main:
+                            log.info("Ответила запасная модель %s", model)
                         return r.json()["choices"][0]["message"]["content"].strip()
                     last_error = f"{model}: HTTP {r.status_code}"
                 except httpx.TransportError as e:
                     last_error = f"{model}: {e!r}"
                 log.warning("Нейросеть не ответила (%s), попытка %d", last_error, attempt + 1)
-                await asyncio.sleep(5 * (attempt + 1))
+                await asyncio.sleep(5 if model == main else 1)
             raise RuntimeError(f"Нейросеть недоступна: {last_error}")
 
         # ChadGPT принимает одно поле message, поэтому склеиваем всё в один текст
