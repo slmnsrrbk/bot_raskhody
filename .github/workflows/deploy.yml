@@ -8,7 +8,7 @@ on:
         required: true
         default: install
         type: choice
-        options: [install, restart, logs, diagnose, reset-data, ai-install, ai-login, ai-code, ai-logs, ai-replies, ai-stop]
+        options: [install, restart, logs, diagnose, reset-data, ai-install, ai-login, ai-code, ai-logs, ai-replies, ai-probe, ai-stop]
       code:
         description: "Только для ai-code: код входа из Telegram"
         required: false
@@ -172,6 +172,11 @@ jobs:
         if: startsWith(env.ACTION, 'ai-')
         run: |
           sshpass -e ssh $SSH_OPTS "root@$HOST" 'journalctl -u ai_responder -n 40 --no-pager || true'
+
+      - name: AI responder — probe models
+        if: env.ACTION == 'ai-probe'
+        run: |
+          sshpass -e ssh $SSH_OPTS "root@$HOST" "cd /root/bot && git fetch -q origin ${{ github.ref_name }} && git checkout -q origin/${{ github.ref_name }} -- ai_responder/probe.py && $AI_RUN probe.py anthropic/claude-sonnet-5.5 anthropic/claude-haiku-5.5 anthropic/claude-sonnet-4.6 anthropic/claude-opus-5.5 openai/gpt-4.1-mini google/gemini-2.5-flash"
 
       - name: AI responder — recent replies
         if: env.ACTION == 'ai-replies'
