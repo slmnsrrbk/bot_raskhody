@@ -481,7 +481,11 @@ async def topic_for(key: str, contact: dict) -> int | None:
     if contact.get("topic"):
         return contact["topic"]
     title = f"{contact.get('name') or key} (@{key})"[:120]
-    res = await client(CreateForumTopicRequest(channel=group_id(), title=title, random_id=random.getrandbits(62)))
+    try:
+        res = await client(CreateForumTopicRequest(channel=group_id(), title=title, random_id=random.getrandbits(62)))
+    except (errors.ChannelPrivateError, errors.ChannelInvalidError, errors.ChatAdminRequiredError):
+        await group_lost()
+        return None
     for u in res.updates:
         if isinstance(u, UpdateNewChannelMessage) and isinstance(u.message.action, MessageActionTopicCreate):
             contact["topic"] = u.message.id
@@ -502,6 +506,18 @@ def link_copy(copy_id: int, chat_id: int, msg_id: int, ours: bool):
         for old in list(links)[:500]:
             links.pop(old)
     save_state()
+
+
+async def group_lost():
+    """Группа удалена или аккаунт из неё убран — перестаём туда писать и говорим тебе."""
+    if not state.pop("group_id", None):
+        return
+    for c in state["contacts"].values():
+        c.pop("topic", None)
+    save_state()
+    log.warning("Группа «Переписки» недоступна, отключил её")
+    await notify(nbsp("⚠️ Группа «Переписки» недоступна: её удалили или аккаунт из неё убрали. "
+                      "Дублирование отключил. Создать новую: /group"))
 
 
 async def mirror(key: str, contact: dict, text: str, media_msg=None, orig: tuple | None = None):
@@ -528,6 +544,8 @@ async def mirror(key: str, contact: dict, text: str, media_msg=None, orig: tuple
         if orig and target == group_id():
             for c in copies:
                 link_copy(c.id, contact["id"], orig[0], orig[1])
+    except (errors.ChannelPrivateError, errors.ChannelInvalidError):
+        await group_lost()
     except Exception:
         log.exception("Не удалось продублировать в группу")
 
