@@ -911,11 +911,30 @@ async def check_nudges():
         await propose_nudge(key, c)
 
 
+async def find_user(key: str):
+    """Ищет человека по @username или id. Если поиск Telegram недоступен — среди твоих диалогов."""
+    try:
+        return await client.get_entity(int(key) if key.isdigit() else key)
+    except errors.FloodWaitError as e:
+        problem = e
+    except (errors.UsernameNotOccupiedError, errors.UsernameInvalidError) as e:
+        problem = e
+    except Exception as e:  # noqa: BLE001
+        problem = e
+    log.warning("Поиск @%s не удался: %r", key, problem)
+    async for dialog in client.iter_dialogs(limit=500):
+        ent = dialog.entity
+        if isinstance(ent, User) and (str(ent.id) == key or (ent.username or "").lower() == key
+                                      or key in [u.username.lower() for u in (ent.usernames or [])]):
+            return ent
+    raise problem
+
+
 def explain_error(e: Exception) -> str:
     if isinstance(e, errors.PeerFloodError):
         return "Telegram ограничил аккаунт за спам, писать новым людям пока нельзя (проверить: @SpamBot)"
     if isinstance(e, errors.FloodWaitError):
-        return f"Telegram просит подождать {e.seconds} с: слишком много действий подряд"
+        return f"Telegram просит подождать {e.seconds // 60 + 1} мин: слишком много запросов подряд"
     if isinstance(e, (errors.UserPrivacyRestrictedError, errors.UserIsBlockedError)):
         return "человек ограничил, кто может ему писать, или заблокировал тебя"
     if isinstance(e, errors.InputUserDeactivatedError):
@@ -976,6 +995,7 @@ async def nudge_loop():
             state["blocks_at"] = time.time()
             try:
                 await check_blocks()
+                await resolve_missing(announce=True)
             except Exception:
                 log.exception("Не удалось проверить блокировки")
         if not state.get("lessons_off") and time.time() - state.get("lessons_at", 0) > 86400:
@@ -1342,7 +1362,7 @@ async def handle_command(event):
             contacts.setdefault(key, {})["goal"] = tail.strip()
             contacts[key].pop("paused_until", None)
             try:
-                ent = await client.get_entity(int(key) if key.isdigit() else key)
+                ent = await find_user(key)
                 contacts[key]["id"] = ent.id
                 takeover_until.pop(ent.id, None)
                 who = " ".join(filter(None, [ent.first_name, ent.last_name]))
@@ -1350,9 +1370,13 @@ async def handle_command(event):
                 out = f"✅ @{key} ({who}): {tail.strip()}"
                 if group_id():
                     await topic_for(key, contacts[key])
-            except Exception:
-                out = (f"⚠️ Добавил @{key}, но в Telegram такого не нашёл. "
+            except (errors.UsernameNotOccupiedError, errors.UsernameInvalidError):
+                out = (f"⚠️ Добавил @{key}, но такого юзернейма в Telegram нет. "
                        "Нужен именно @username из профиля человека, не имя. Если ошибся, /del и добавь заново")
+            except Exception as e:
+                out = (f"⚠️ Добавил @{key}, но найти пока не смог: {explain_error(e)}. "
+                       "Попробую снова через час и напишу, когда найду. Если вы уже переписывались, "
+                       "напиши человеку сам — тогда найдётся сразу")
     elif cmd == "/undo":
         if key not in contacts or not contacts[key].get("id"):
             out = f"Такого нет в списке: @{key or 'username'}"
@@ -1458,7 +1482,7 @@ async def handle_command(event):
             out = "✅ Управление снова через Избранное"
         elif key:
             try:
-                ent = await client.get_entity(int(key) if key.isdigit() else key)
+                ent = await find_user(key)
                 state["control_id"] = ent.id
                 out = f"✅ Управление теперь с @{key}"
                 await client.send_message(ent.id, "Привет, теперь я пишу сюда. Команды присылай в этот чат, начни с /help")
@@ -1632,15 +1656,26 @@ async def clean_leaked_thoughts():
         await notify(nbsp("🧹 Удалил у обоих сообщения, в которые попали рассуждения модели: " + ", ".join(found)))
 
 
+async def resolve_missing(announce: bool = False):
+    """Ищет тех, кого при /add найти не удалось (например, Telegram временно ограничил поиск)."""
+    for k, c in state["contacts"].items():
+        if c.get("id"):
+            continue
+        try:
+            ent = await find_user(k)
+        except Exception:
+            log.warning("Не нашёл в Telegram @%s", k)
+            continue
+        c["id"] = ent.id
+        c["name"] = " ".join(filter(None, [ent.first_name, ent.last_name])) or k
+        if announce:
+            await notify(f"✅ Нашёл @{k} ({c['name']}), теперь бот ему отвечает")
+    save_state()
+
+
 async def catch_up():
     """После перезапуска отвечаем тем, чьи сообщения остались без ответа."""
-    for k, c in state["contacts"].items():
-        if not c.get("id"):
-            try:
-                c["id"] = (await client.get_entity(int(k) if k.isdigit() else k)).id
-            except Exception:
-                log.warning("Не нашёл в Telegram @%s", k)
-    save_state()
+    await resolve_missing()
     if not state["enabled"]:
         return
     async for dialog in client.iter_dialogs(limit=100):
